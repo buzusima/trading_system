@@ -906,7 +906,7 @@ class TradingSystemGUI:
             self.log_message(f"Error stopping trading: {e}", "ERROR")
 
     def _start_actual_trading(self):
-        """เริ่มการเทรดจริง"""
+        """เริ่มการเทรดจริง - แก้ไขแล้ว"""
         if not hasattr(self, 'trading_loop_active'):
             self.trading_loop_active = False
         
@@ -916,39 +916,220 @@ class TradingSystemGUI:
         self.trading_loop_active = True
         
         def trading_loop():
-            """Main Trading Loop"""
+            """Main Trading Loop - แก้ไข Error Handling"""
             self.root.after(0, lambda: self.log_message("🔄 เริ่ม Trading Loop หลัก", "INFO"))
+            
+            # ตรวจสอบ Order Executor
+            if not hasattr(self, 'order_executor') or not self.order_executor:
+                self.root.after(0, lambda: self.log_message("❌ Order Executor ไม่พร้อม - กำลังสร้างใหม่...", "WARNING"))
+                try:
+                    from mt5_integration.order_executor import get_order_executor
+                    self.order_executor = get_order_executor()
+                    self.root.after(0, lambda: self.log_message("✅ สร้าง Order Executor ใหม่สำเร็จ", "SUCCESS"))
+                except Exception as e:
+                    error_msg = str(e)
+                    self.root.after(0, lambda msg=error_msg: self.log_message(f"❌ ไม่สามารถสร้าง Order Executor: {msg}", "ERROR"))
+                    return
+            
+            # ตัวนับสำหรับสถิติ
+            loop_count = 0
+            signal_count = 0
+            order_count = 0
+            last_stats_time = time.time()
             
             while self.trading_loop_active and self.is_trading:
                 try:
-                    # 1. ดึง Signal จาก Signal Generator
-                    if hasattr(self, 'signal_generator') and self.signal_generator:
-                        signal = self.signal_generator.get_next_entry_signal()
+                    loop_count += 1
+                    
+                    # แสดงสถิติทุก 30 รอบ (ประมาณ 5 นาที)
+                    if loop_count % 30 == 0:
+                        current_time = time.time()
+                        elapsed_minutes = (current_time - last_stats_time) / 60
+                        signals_per_minute = signal_count / max(elapsed_minutes, 1)
+                        orders_per_minute = order_count / max(elapsed_minutes, 1)
                         
-                        if signal:
-                            self.root.after(0, lambda s=signal: self.log_message(
-                                f"📨 ได้รับ Signal: {s.direction.value} | "
-                                f"Price: {s.current_price:.2f} | "
-                                f"Confidence: {s.confidence:.2f}", "INFO"))
-                            
-                            # 2. ส่งออร์เดอร์
-                            if hasattr(self, 'order_executor') and self.order_executor:
-                                self._execute_trading_signal(signal)
+                        self.root.after(0, lambda: self.log_message(
+                            f"📊 Stats: Loop #{loop_count} | "
+                            f"Signals: {signal_count} ({signals_per_minute:.1f}/min) | "
+                            f"Orders: {order_count} ({orders_per_minute:.1f}/min)", "INFO"))
                     
+                    # 1. ดึง Signal จาก Signal Generator
+                    signal = None
+                    if hasattr(self, 'signal_generator') and self.signal_generator:
+                        try:
+                            signal = self.signal_generator.get_next_entry_signal()
+                            if signal:
+                                signal_count += 1
+                                self.root.after(0, lambda s=signal: self.log_message(
+                                    f"📨 Signal #{signal_count}: {s.direction.value} | "
+                                    f"Price: {s.current_price:.2f} | "
+                                    f"Confidence: {s.confidence:.2f} | "
+                                    f"Strategy: {s.source_engine.value}", "INFO"))
+                        except Exception as e:
+                            if loop_count % 10 == 0:  # แสดง error ทุก 10 รอบ
+                                error_msg = str(e)
+                                self.root.after(0, lambda msg=error_msg: self.log_message(
+                                    f"⚠️ Signal Generator Error: {msg}", "WARNING"))
+                    
+                    # 2. ประมวลผล Signal และส่งออร์เดอร์
+                    if signal and self.order_executor:
+                        try:
+                            order_result = self._execute_trading_signal_safe(signal)
+                            if order_result:
+                                order_count += 1
+                                
+                                if order_result.status.value == "FILLED":
+                                    self.root.after(0, lambda r=order_result: self.log_message(
+                                        f"✅ Order #{order_count} Filled: "
+                                        f"{signal.direction.value} {r.volume_executed} lots @ {r.price_executed:.2f} "
+                                        f"(Ticket: {r.mt5_position})", "SUCCESS"))
+                                else:
+                                    self.root.after(0, lambda r=order_result: self.log_message(
+                                        f"❌ Order #{order_count} Failed: {r.error_description}", "ERROR"))
+                        
+                        except Exception as e:
+                            error_msg = str(e)
+                            self.root.after(0, lambda msg=error_msg: self.log_message(
+                                f"❌ Order Execution Error: {msg}", "ERROR"))
+                                        
                     # 3. ตรวจสอบ Positions ที่ต้อง Recovery
-                    self._check_positions_for_recovery()
+                    if loop_count % 6 == 0:  # ทุก 6 รอบ (ประมาณ 1 นาที)
+                        try:
+                            self._check_positions_for_recovery()
+                        except Exception as e:
+                            if loop_count % 30 == 0:  # แสดง error ทุก 30 รอบ
+                                error_msg = str(e)
+                                self.root.after(0, lambda msg=error_msg: self.log_message(
+                                    f"⚠️ Recovery Check Error: {msg}", "WARNING"))                    
                     
+            
                     # รอก่อนรอบถัดไป
                     time.sleep(10)  # ตรวจสอบทุก 10 วินาที
                     
                 except Exception as e:
                     error_msg = str(e)
-                    self.root.after(0, lambda msg=error_msg: self.log_message(f"❌ Trading Loop Error: {msg}", "ERROR"))
-                    time.sleep(30)  # รอนานขึ้นเมื่อมี error
+                    self.root.after(0, lambda msg=error_msg: self.log_message(
+                        f"❌ Trading Loop Critical Error: {msg}", "ERROR"))
+                    time.sleep(30)  # รอนานขึ้นเมื่อมี critical error
+                    
+                    # ตรวจสอบว่าต้อง restart components หรือไม่
+                    if "MT5" in str(e) or "connection" in str(e).lower():
+                        self.root.after(0, lambda: self.log_message(
+                            "🔄 Attempting to restart trading components...", "INFO"))
+                        try:
+                            self._restart_trading_components()
+                        except Exception as restart_error:
+                            restart_msg = str(restart_error)
+                            self.root.after(0, lambda msg=restart_msg: self.log_message(
+                                f"❌ Component restart failed: {msg}", "ERROR"))
+            
+            # Trading loop ปิด
+            self.root.after(0, lambda: self.log_message("🛑 Trading Loop หยุดทำงาน", "INFO"))
         
         # เริ่ม Trading Loop ใน thread แยก
         import threading
         threading.Thread(target=trading_loop, daemon=True).start()
+
+    def _execute_trading_signal_safe(self, signal):
+        """Execute Trading Signal แบบปลอดภัย"""
+        try:
+            from mt5_integration.order_executor import OrderType
+            
+            # แปลง direction เป็น OrderType
+            if signal.direction.value == "BUY":
+                order_type = OrderType.BUY
+            elif signal.direction.value == "SELL":
+                order_type = OrderType.SELL
+            else:
+                self.log_message(f"❌ Invalid signal direction: {signal.direction.value}", "ERROR")
+                return None
+            
+            # ตรวจสอบ volume
+            volume = max(0.01, min(signal.suggested_volume, 1.0))  # จำกัด 0.01-1.0 lots
+            
+            # ส่งออร์เดอร์
+            result = self.order_executor.send_market_order(
+                symbol="XAUUSD",
+                order_type=order_type,
+                volume=volume,
+                comment=f"Signal_{signal.signal_id[:8]}",
+                strategy_name=signal.source_engine.value,
+                recovery_level=0
+            )
+            
+            return result
+            
+        except Exception as e:
+            self.log_message(f"❌ Signal execution error: {e}", "ERROR")
+            return None
+
+    def _check_positions_for_recovery_safe(self):
+        """ตรวจสอบ Positions สำหรับ Recovery แบบปลอดภัย"""
+        try:
+            if not hasattr(self, 'order_executor') or not self.order_executor:
+                return
+            
+            # ดึง positions ที่เปิดอยู่
+            positions = self.order_executor.get_open_positions("XAUUSD")
+            
+            if not positions:
+                return
+            
+            # แสดงสถานะ positions
+            total_profit = sum(pos['profit'] for pos in positions)
+            position_count = len(positions)
+            
+            if position_count > 0:
+                self.log_message(f"💼 Positions: {position_count} open | "
+                            f"Total P&L: ${total_profit:.2f}", "INFO")
+            
+            # Recovery logic แบบง่าย (ถ้ามี positions ขาดทุน)
+            losing_positions = [pos for pos in positions if pos['profit'] < -10]  # ขาดทุนเกิน $10
+            
+            if losing_positions and hasattr(self, 'recovery_engine'):
+                try:
+                    # เรียก Recovery Engine (ถ้ามี)
+                    for pos in losing_positions:
+                        self.log_message(f"🔄 Position {pos['ticket']} needs recovery: ${pos['profit']:.2f}", "WARNING")
+                        # ใส่ Recovery logic ตรงนี้ในอนาคต
+                except Exception as e:
+                    self.log_message(f"⚠️ Recovery processing error: {e}", "WARNING")
+            
+        except Exception as e:
+            # ไม่แสดง error ถ้าเป็นปัญหาเล็กๆ
+            if "connection" in str(e).lower() or "MT5" in str(e):
+                self.log_message(f"⚠️ Position check warning: {e}", "WARNING")
+
+    def _restart_trading_components(self):
+        """Restart Trading Components เมื่อมี Error"""
+        try:
+            self.log_message("🔄 Restarting trading components...", "INFO")
+            
+            # Restart Order Executor
+            if hasattr(self, 'order_executor'):
+                try:
+                    self.order_executor.shutdown()
+                except:
+                    pass
+            
+            from mt5_integration.order_executor import get_order_executor
+            self.order_executor = get_order_executor()
+            self.log_message("✅ Order Executor restarted", "SUCCESS")
+            
+            # Restart Signal Generator ถ้าจำเป็น
+            if hasattr(self, 'signal_generator') and self.signal_generator:
+                try:
+                    status = self.signal_generator.get_system_status()
+                    if not status.get('is_ready', False):
+                        self.signal_generator.stop_signal_generation()
+                        time.sleep(2)
+                        self.signal_generator.start_signal_generation()
+                        self.log_message("✅ Signal Generator restarted", "SUCCESS")
+                except Exception as e:
+                    self.log_message(f"⚠️ Signal Generator restart failed: {e}", "WARNING")
+            
+        except Exception as e:
+            self.log_message(f"❌ Component restart error: {e}", "ERROR")
 
     def _execute_trading_signal(self, signal):
         """Execute Trading Signal"""
@@ -981,36 +1162,56 @@ class TradingSystemGUI:
             self.root.after(0, lambda msg=error_msg: self.log_message(f"❌ Execute Signal Error: {msg}", "ERROR"))
 
     def _check_positions_for_recovery(self):
-        """ตรวจสอบ Positions ที่ต้อง Recovery"""
+        """ตรวจสอบ Positions ที่ต้อง Recovery - Fixed Version"""
         try:
             if not hasattr(self, 'recovery_engine') or not self.recovery_engine:
                 return
             
-            # ดึง Positions จาก MT5
-            import MetaTrader5 as mt5
-            positions = mt5.positions_get(symbol="XAUUSD")
+            # ดึง Positions จาก Order Executor
+            if hasattr(self, 'order_executor') and self.order_executor:
+                positions = self.order_executor.get_open_positions("XAUUSD")
+            else:
+                return
             
-            if positions:
-                for pos in positions:
-                    # ตรวจสอบ P&L
-                    if pos.profit < -20.0:  # ขาดทุนเกิน $20
+            recovery_triggered = False
+            
+            for pos in positions:
+                # ตรวจสอบขาดทุน
+                if pos['profit'] < -15.0:  # ขาดทุนเกิน $15
+                    try:
+                        # เรียก Recovery Engine ที่มีอยู่
                         from intelligent_recovery.recovery_engine import RecoveryTrigger, RecoveryPriority
                         
-                        # เริ่ม Recovery
                         success = self.recovery_engine.trigger_recovery(
-                            position_id=str(pos.ticket),
-                            trigger_type=RecoveryTrigger.LOSING_POSITION,
-                            priority=RecoveryPriority.HIGH if pos.profit < -50.0 else RecoveryPriority.MEDIUM
+                            position_id=str(pos['ticket']),
+                            trigger_type=RecoveryTrigger.LOSS_THRESHOLD,
+                            priority=RecoveryPriority.HIGH if pos['profit'] < -30.0 else RecoveryPriority.MEDIUM
                         )
                         
                         if success:
-                            ticket = pos.ticket
-                            self.root.after(0, lambda t=ticket: self.log_message(
-                                f"🔄 เริ่ม Recovery สำหรับ Position: {t}", "INFO"))
-                            
+                            recovery_triggered = True
+                            self.root.after(0, lambda t=pos['ticket'], p=pos['profit']: self.log_message(
+                                f"🔄 เริ่ม Recovery: Position {t} | Loss: ${p:.2f}", "WARNING"))
+                    
+                    except Exception as recovery_error:
+                        self.root.after(0, lambda e=str(recovery_error): self.log_message(
+                            f"❌ Recovery Trigger Error: {e}", "ERROR"))
+            
+            # แสดงสถิติ Recovery
+            if recovery_triggered:
+                try:
+                    stats = self.recovery_engine.get_recovery_summary()
+                    success_rate = stats.get('success_rate', 0)
+                    active_recoveries = stats.get('active_recoveries', 0)
+                    
+                    self.root.after(0, lambda sr=success_rate, ar=active_recoveries: self.log_message(
+                        f"📊 Recovery Status: Active={ar}, Success Rate={sr:.1f}%", "INFO"))
+                except:
+                    pass
+                        
         except Exception as e:
-            error_msg = str(e)
-            self.root.after(0, lambda msg=error_msg: self.log_message(f"❌ Check Recovery Error: {msg}", "ERROR"))
+            # ไม่ต้องแสดง error เล็กๆ
+            pass
 
     def close_all_positions(self):
         """Close all open positions"""
