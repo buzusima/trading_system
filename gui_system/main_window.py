@@ -906,12 +906,14 @@ class TradingSystemGUI:
             self.log_message(f"Error stopping trading: {e}", "ERROR")
 
     def _start_actual_trading(self):
-        """เริ่มการเทรดจริง - แก้ไขแล้ว"""
-        if not hasattr(self, 'trading_loop_active'):
-            self.trading_loop_active = False
         
-        if self.trading_loop_active:
-            return
+        """เริ่มการเทรดจริง - แก้ไขแล้ว"""
+        return
+        #if not hasattr(self, 'trading_loop_active'):
+        #   self.trading_loop_active = False
+        
+        #if self.trading_loop_active:
+        #   return
         
         self.trading_loop_active = True
         

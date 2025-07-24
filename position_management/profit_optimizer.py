@@ -349,23 +349,31 @@ class CompleteProfitTaker:
     def _close_partial_position(self, target: ProfitTarget, volume: float) -> bool:
         """ปิด position บางส่วน"""
         try:
-            # สร้าง close order (ตรงข้ามกับ position เดิม)
-            close_type = OrderType.SELL if target.position_type == "BUY" else OrderType.BUY
+            # ตรวจสอบ volume ก่อน
+            if volume <= 0:
+                self.logger.warning(f"⚠️ Invalid volume: {volume} - ปิดทั้งหมดแทน")
+                volume = target.volume
             
-            # ส่งคำสั่งปิด
-            result = self.order_executor.send_order(
-                order_type=close_type,
-                volume=volume,
-                comment=f"Partial_Close_{target.position_ticket}",
-                strategy_name="ProfitTaking"
-            )
+            # ปิด position ทั้งหมด (เพราะ MT5 ไม่รองรับ partial close ง่ายๆ)
+            success = self.position_tracker.close_position(target.position_ticket)
             
-            return result.status.value == "FILLED"
+            if success:
+                # อัพเดท target
+                target.partial_closed_volume += target.volume  # ใช้ volume ทั้งหมด
+                target.remaining_volume = 0
+                
+                # ย้าย target ไป completed
+                self.completed_targets.append(target)
+                del self.active_targets[target.position_ticket]
+                
+                self.logger.info(f"✅ Position closed: {target.position_ticket} (Full close)")
+            
+            return success
             
         except Exception as e:
-            self.logger.error(f"❌ Partial close error: {e}")
+            self.logger.error(f"❌ Close error: {e}")
             return False
-    
+                
     def _close_full_position(self, target: ProfitTarget) -> bool:
         """ปิด position ทั้งหมด"""
         try:
@@ -430,6 +438,54 @@ class CompleteProfitTaker:
             
             self.logger.info(f"🔄 Changed profit mode for {ticket}: {mode.value}")
 
+    def connect_position_tracker(self):
+        """เชื่อมต่อกับ Position Tracker"""
+        try:
+            from position_management.position_tracker import get_position_tracker
+            self.position_tracker = get_position_tracker()
+            
+            # เชื่อมต่อระบบกันและกัน
+            self.position_tracker.connect_profit_system()
+            
+            self.logger.info("✅ เชื่อมต่อ Position Tracker สำเร็จ")
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ ไม่สามารถเชื่อมต่อ Position Tracker: {e}")
+            return False
+
+    def check_profit_opportunity(self, position):
+        """ตรวจสอบโอกาสเก็บกำไรจาก Position Tracker"""
+        try:
+            # ตรวจสอบว่า position นี้มีอยู่ใน active_targets หรือไม่
+            if position.ticket not in self.active_targets:
+                # สร้าง profit target ใหม่
+                profit_mode = self._determine_profit_mode(position)
+                self._create_profit_target(position, profit_mode)
+                
+            # อัพเดท target ที่มีอยู่
+            elif position.profit > 0:
+                target = self.active_targets[position.ticket]
+                target.current_price = position.current_price
+                target.last_update = datetime.now()
+                
+                # ตรวจสอบเงื่อนไขเก็บกำไร
+                self._check_single_profit_condition(target)
+                
+        except Exception as e:
+            self.logger.error(f"❌ ข้อผิดพลาดในการตรวจสอบกำไร: {e}")
+
+    def get_profit_statistics(self):
+        """ดึงสถิติการเก็บกำไร"""
+        return {
+            'active_targets': len(self.active_targets),
+            'completed_targets': len(self.completed_targets),
+            'total_profit_taken': sum(t.max_profit_seen for t in self.completed_targets),
+            'average_profit_per_target': sum(t.max_profit_seen for t in self.completed_targets) / len(self.completed_targets) if self.completed_targets else 0,
+            'profit_taking_success_rate': len([t for t in self.completed_targets if t.max_profit_seen > 0]) / len(self.completed_targets) if self.completed_targets else 0,
+            'last_update': datetime.now()
+        }
+
+
 # === GLOBAL INSTANCE ===
 _global_profit_taker: Optional[CompleteProfitTaker] = None
 
@@ -473,6 +529,7 @@ def test_profit_system():
     profit_taker.stop_profit_taking()
     
     print("✅ Test completed")
+
 
 if __name__ == "__main__":
     test_profit_system()

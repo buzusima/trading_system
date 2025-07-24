@@ -304,9 +304,9 @@ class PositionTracker:
                         position.update_current_data(
                             current_price=current_price,
                             profit=mt5_pos.profit,
-                            swap=mt5_pos.swap,
-                            commission=mt5_pos.commission
-                        )
+                            swap=getattr(mt5_pos, 'swap', 0.0),
+                            commission=getattr(mt5_pos, 'commission', 0.0)
+                        )                    
                     else:
                         # สร้าง position ใหม่
                         position = self._create_position_from_mt5(mt5_pos, current_price)
@@ -359,7 +359,7 @@ class PositionTracker:
             open_time=datetime.fromtimestamp(mt5_pos.time),
             profit=mt5_pos.profit,
             swap=mt5_pos.swap,
-            commission=mt5_pos.commission,
+            commission=getattr(mt5_pos, 'commission', 0.0),
             magic_number=mt5_pos.magic,
             comment=mt5_pos.comment,
             unrealized_pnl=mt5_pos.profit
@@ -610,6 +610,50 @@ class PositionTracker:
             "update_interval_seconds": self.update_interval
         }
 
+    def connect_profit_system(self):
+        """เชื่อมต่อกับระบบ Profit Optimizer"""
+        try:
+            from position_management.profit_optimizer import get_profit_optimizer
+            self.profit_optimizer = get_profit_optimizer()
+            
+            # เชื่อมต่อ callback
+            self.add_position_callback(self._on_position_update_for_profit)
+            
+            self.logger.info("✅ เชื่อมต่อ Profit System สำเร็จ")
+            return True
+        except ImportError as e:
+            self.logger.warning(f"⚠️ ไม่สามารถเชื่อมต่อ Profit System: {e}")
+            return False
+
+    def _on_position_update_for_profit(self, positions):
+        """Callback สำหรับส่งข้อมูลไปยัง Profit System"""
+        if hasattr(self, 'profit_optimizer') and self.profit_optimizer:
+            try:
+                # แจ้งเตือน Profit Optimizer เมื่อมี positions ใหม่หรือเปลี่ยนแปลง
+                for position in positions:
+                    if position.profit > 0:  # มีกำไร
+                        self.profit_optimizer.check_profit_opportunity(position)
+            except Exception as e:
+                self.logger.error(f"❌ ข้อผิดพลาดใน profit callback: {e}")
+
+    def get_real_time_profit_data(self):
+        """ดึงข้อมูล Profit แบบ Real-time"""
+        with self.tracker_lock:
+            total_profit = sum(pos.profit for pos in self.positions.values())
+            floating_profit = sum(pos.profit for pos in self.positions.values() if pos.profit != 0)
+            position_count = len(self.positions)
+            
+            return {
+                'total_profit': total_profit,
+                'floating_profit': floating_profit,
+                'position_count': position_count,
+                'profitable_positions': len([p for p in self.positions.values() if p.profit > 0]),
+                'losing_positions': len([p for p in self.positions.values() if p.profit < 0]),
+                'largest_profit': max([p.profit for p in self.positions.values()], default=0),
+                'largest_loss': min([p.profit for p in self.positions.values()], default=0),
+                'last_update': datetime.now()
+            }
+    
 # === HELPER FUNCTIONS ===
 
 def get_current_positions(symbol: str = None) -> List[Position]:
@@ -661,3 +705,4 @@ def get_position_tracker() -> PositionTracker:
         # เริ่มการติดตามอัตโนมัติ
         _global_position_tracker.start_tracking()
     return _global_position_tracker
+
