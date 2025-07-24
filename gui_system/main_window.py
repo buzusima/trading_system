@@ -906,7 +906,7 @@ class TradingSystemGUI:
             self.log_message(f"Error stopping trading: {e}", "ERROR")
 
     def _start_actual_trading(self):
-        """เริ่มการเทรดจริง - แก้ไขแล้ว"""
+        """เริ่มการเทรดจริง - พร้อมระบบเก็บกำไร"""
         if not hasattr(self, 'trading_loop_active'):
             self.trading_loop_active = False
         
@@ -915,16 +915,24 @@ class TradingSystemGUI:
         
         self.trading_loop_active = True
         
+        # ⭐ เริ่ม Profit Taking System
+        if self.profit_taker:
+            try:
+                self.profit_taker.start_profit_taking()
+                self.log_message("🎯 เริ่มระบบเก็บกำไรอัตโนมัติ", "SUCCESS")
+            except Exception as e:
+                self.log_message(f"⚠️ ไม่สามารถเริ่มระบบเก็บกำไร: {e}", "WARNING")
+        
         def trading_loop():
             """Main Trading Loop - แก้ไข Error Handling"""
-            self.root.after(0, lambda: self.log_message("🔄 เริ่ม Trading Loop หลัก", "INFO"))
+            self.root.after(0, lambda: self.log_message("🔄 เริ่ม Trading Loop หลัก (พร้อมระบบเก็บกำไร)", "INFO"))
             
             # ตรวจสอบ Order Executor
             if not hasattr(self, 'order_executor') or not self.order_executor:
                 self.root.after(0, lambda: self.log_message("❌ Order Executor ไม่พร้อม - กำลังสร้างใหม่...", "WARNING"))
                 try:
-                    from mt5_integration.order_executor import get_order_executor
-                    self.order_executor = get_order_executor()
+                    from mt5_integration.order_executor import SmartOrderExecutor
+                    self.order_executor = SmartOrderExecutor()
                     self.root.after(0, lambda: self.log_message("✅ สร้าง Order Executor ใหม่สำเร็จ", "SUCCESS"))
                 except Exception as e:
                     error_msg = str(e)
@@ -935,6 +943,7 @@ class TradingSystemGUI:
             loop_count = 0
             signal_count = 0
             order_count = 0
+            profit_count = 0  # ⭐ เพิ่มตัวนับกำไร
             last_stats_time = time.time()
             
             while self.trading_loop_active and self.is_trading:
@@ -948,10 +957,21 @@ class TradingSystemGUI:
                         signals_per_minute = signal_count / max(elapsed_minutes, 1)
                         orders_per_minute = order_count / max(elapsed_minutes, 1)
                         
-                        self.root.after(0, lambda: self.log_message(
+                        # ⭐ เพิ่มสถิติ Profit Taking
+                        profit_stats_msg = ""
+                        if self.profit_taker:
+                            try:
+                                profit_stats = self.profit_taker.get_statistics()
+                                active_targets = profit_stats.get('active_targets', 0)
+                                success_rate = profit_stats.get('success_rate', 0.0)
+                                profit_stats_msg = f" | Profit Targets: {active_targets} | Success: {success_rate:.1f}%"
+                            except:
+                                pass
+                        
+                        self.root.after(0, lambda pm=profit_stats_msg: self.log_message(
                             f"📊 Stats: Loop #{loop_count} | "
                             f"Signals: {signal_count} ({signals_per_minute:.1f}/min) | "
-                            f"Orders: {order_count} ({orders_per_minute:.1f}/min)", "INFO"))
+                            f"Orders: {order_count} ({orders_per_minute:.1f}/min){pm}", "INFO"))
                     
                     # 1. ดึง Signal จาก Signal Generator
                     signal = None
@@ -991,8 +1011,46 @@ class TradingSystemGUI:
                             error_msg = str(e)
                             self.root.after(0, lambda msg=error_msg: self.log_message(
                                 f"❌ Order Execution Error: {msg}", "ERROR"))
+                    
+                    # ⭐ 3. ตรวจสอบและแสดงสถานะ Profit Taking
+                    if loop_count % 5 == 0 and self.profit_taker:  # ทุก 5 รอบ
+                        try:
+                            active_targets = self.profit_taker.get_active_targets()
+                            
+                            if active_targets:
+                                # แสดงข้อมูล profit targets
+                                target_count = len(active_targets)
+                                if target_count > 0:
+                                    self.root.after(0, lambda tc=target_count: self.log_message(
+                                        f"🎯 Active Profit Targets: {tc} positions being monitored", "INFO"))
+                                    
+                                    # แสดงรายละเอียด target แรก (เป็นตัวอย่าง)
+                                    if len(active_targets) > 0:
+                                        first_ticket = list(active_targets.keys())[0]
+                                        target = active_targets[first_ticket]
                                         
-                    # 3. ตรวจสอบ Positions ที่ต้อง Recovery
+                                        # คำนวณกำไรปัจจุบัน
+                                        try:
+                                            current_pips = self.profit_taker._calculate_profit_pips(
+                                                target.entry_price,
+                                                target.current_price,
+                                                target.position_type
+                                            )
+                                            
+                                            status = "TRAILING" if target.is_trailing else "MONITORING"
+                                            
+                                            self.root.after(0, lambda t=first_ticket, cp=current_pips, tp=target.target_pips, s=status: self.log_message(
+                                                f"🎯 Target #{t}: {cp:+.1f} pips (Target: {tp:.1f}) - {s}", "INFO"))
+                                        except:
+                                            pass
+                        
+                        except Exception as e:
+                            if loop_count % 60 == 0:  # แสดง error ทุก 60 รอบ
+                                error_msg = str(e)
+                                self.root.after(0, lambda msg=error_msg: self.log_message(
+                                    f"⚠️ Profit System Check Error: {msg}", "WARNING"))
+                    
+                    # 4. ตรวจสอบ Positions ที่ต้อง Recovery
                     if loop_count % 6 == 0:  # ทุก 6 รอบ (ประมาณ 1 นาที)
                         try:
                             self._check_positions_for_recovery()
@@ -1000,9 +1058,8 @@ class TradingSystemGUI:
                             if loop_count % 30 == 0:  # แสดง error ทุก 30 รอบ
                                 error_msg = str(e)
                                 self.root.after(0, lambda msg=error_msg: self.log_message(
-                                    f"⚠️ Recovery Check Error: {msg}", "WARNING"))                    
+                                    f"⚠️ Recovery Check Error: {msg}", "WARNING"))
                     
-            
                     # รอก่อนรอบถัดไป
                     time.sleep(10)  # ตรวจสอบทุก 10 วินาที
                     
@@ -1025,11 +1082,98 @@ class TradingSystemGUI:
             
             # Trading loop ปิด
             self.root.after(0, lambda: self.log_message("🛑 Trading Loop หยุดทำงาน", "INFO"))
+            
+            # ⭐ หยุด Profit Taking System
+            if self.profit_taker:
+                try:
+                    self.profit_taker.stop_profit_taking()
+                    self.root.after(0, lambda: self.log_message("🛑 หยุดระบบเก็บกำไร", "INFO"))
+                except Exception as e:
+                    error_msg = str(e)
+                    self.root.after(0, lambda msg=error_msg: self.log_message(f"⚠️ Stop profit error: {msg}", "WARNING"))
         
         # เริ่ม Trading Loop ใน thread แยก
         import threading
         threading.Thread(target=trading_loop, daemon=True).start()
 
+        # ⭐ 3. เพิ่ม method สำหรับควบคุม Profit System:
+    def show_profit_statistics(self):
+        """แสดงสถิติการเก็บกำไร"""
+        try:
+            if not self.profit_taker:
+                messagebox.showwarning("Warning", "Profit Taking System ไม่พร้อมใช้งาน")
+                return
+            
+            stats = self.profit_taker.get_statistics()
+            active_targets = self.profit_taker.get_active_targets()
+            
+            stats_text = f"""
+    🎯 PROFIT TAKING SYSTEM STATISTICS
+
+    📊 System Status: {'ACTIVE' if stats['system_active'] else 'INACTIVE'}
+    📈 Active Targets: {stats['active_targets']}
+    ✅ Completed Targets: {stats['completed_targets']}
+    🎯 Successful Targets: {stats['successful_targets']}
+    📊 Success Rate: {stats['success_rate']:.1f}%
+    💰 Avg Profit (pips): {stats['avg_profit_pips']:.1f}
+    📦 Total Volume Closed: {stats['total_volume_closed']:.2f} lots
+
+    🎫 Active Tickets: {', '.join(map(str, stats['active_tickets']))}
+
+    --- ACTIVE TARGETS DETAILS ---
+            """
+            
+            if active_targets:
+                for ticket, target in active_targets.items():
+                    try:
+                        current_pips = self.profit_taker._calculate_profit_pips(
+                            target.entry_price,
+                            target.current_price,
+                            target.position_type
+                        )
+                        
+                        status = "🎯 TRAILING" if target.is_trailing else "👁️ MONITORING"
+                        
+                        stats_text += f"""
+    #{ticket}: {target.position_type} {target.volume:.2f} lots
+    Current: {current_pips:+.1f} pips | Target: {target.target_pips:.1f} pips
+    Mode: {target.profit_mode.value} | Status: {status}
+    Entry: {target.entry_price:.2f} | Current: {target.current_price:.2f}
+                """
+                    except:
+                        stats_text += f"\n#{ticket}: Error calculating details"
+            else:
+                stats_text += "\nNo active profit targets at the moment."
+            
+            messagebox.showinfo("Profit Taking Statistics", stats_text)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Cannot get profit statistics: {e}")
+
+    def toggle_profit_system(self):
+        """เปิด/ปิด Profit Taking System"""
+        try:
+            if not self.profit_taker:
+                messagebox.showwarning("Warning", "Profit Taking System ไม่พร้อมใช้งาน")
+                return
+            
+            stats = self.profit_taker.get_statistics()
+            is_active = stats.get('system_active', False)
+            
+            if is_active:
+                # หยุดระบบ
+                self.profit_taker.stop_profit_taking()
+                self.log_message("🛑 หยุดระบบเก็บกำไร", "INFO")
+                messagebox.showinfo("Success", "หยุดระบบเก็บกำไรแล้ว")
+            else:
+                # เริ่มระบบ
+                self.profit_taker.start_profit_taking()
+                self.log_message("🎯 เริ่มระบบเก็บกำไร", "SUCCESS")
+                messagebox.showinfo("Success", "เริ่มระบบเก็บกำไรแล้ว")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"ไม่สามารถควบคุมระบบเก็บกำไร: {e}")
+    
     def _execute_trading_signal_safe(self, signal):
         """Execute Trading Signal แบบปลอดภัย"""
         try:
