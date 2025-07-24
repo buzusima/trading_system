@@ -104,7 +104,7 @@ class SystemSettings:
             raise ValueError("❌ ระบบรองรับเฉพาะ LIVE Trading เท่านั้น!")
         
         # ตรวจสอบ Symbol ต้องเป็น XAUUSD เท่านั้น
-        if self.symbol != "XAUUSD.v":
+        if self.symbol != "XAUUSD":
             raise ValueError("❌ ระบบรองรับเฉพาะ XAUUSD (Gold) เท่านั้น!")
             
         # ตรวจสอบ Stop Loss ต้องปิดเสมอ
