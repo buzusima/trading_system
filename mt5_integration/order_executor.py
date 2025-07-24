@@ -1,45 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LIVE ORDER EXECUTION ENGINE - เครื่องมือส่งออร์เดอร์แบบเรียลไทม์
-======================================================
-จัดการการส่งออร์เดอร์ MT5 แบบมืออาชีพ พร้อมระบบตรวจสอบและ retry
-รองรับการเทรดแบบ High-Frequency และ Recovery Strategies
+SMART ORDER EXECUTOR - Auto Fill Mode Detection
+=============================================
+แก้ไข Order Executor ให้ลองใช้ Filling Mode หลายแบบอัตโนมัติ
+จนกว่าจะส่งออร์เดอร์สำเร็จ
 
-เชื่อมต่อไปยัง:
-- mt5_integration/mt5_connector.py (การเชื่อมต่อ MT5)
-- config/trading_params.py (พารามิเตอร์การเทรด)
-- utilities/professional_logger.py (logging)
-- utilities/error_handler.py (จัดการข้อผิดพลาด)
-- position_management/position_tracker.py (ติดตาม positions)
+Key Features:
+- ลอง Fill Types: FOK, IOC, RETURN อัตโนมัติ
+- ลอง Volume ต่างๆ ถ้า volume ไม่ถูกต้อง
+- ลอง Deviation ต่างๆ ถ้า price เปลี่ยน
+- Retry mechanism ที่ชาญฉลาด
+- Cache ผลลัพธ์ที่ใช้ได้สำหรับ broker นี้
 """
 
 import MetaTrader5 as mt5
 import threading
 import time
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
 from enum import Enum
 import uuid
-
-from mt5_integration.mt5_connector import get_mt5_connector, ensure_mt5_connection
-from config.trading_params import get_trading_parameters
-from config.settings import get_system_settings
-from utilities.professional_logger import setup_trading_logger
-from utilities.error_handler import (
-    handle_trading_errors, OrderExecutionError, report_error, 
-    ErrorCategory, ErrorSeverity
-)
+import json
+import os
 
 class OrderType(Enum):
     """ประเภทของออร์เดอร์"""
     BUY = "BUY"
     SELL = "SELL"
-    BUY_LIMIT = "BUY_LIMIT"
-    SELL_LIMIT = "SELL_LIMIT"
-    BUY_STOP = "BUY_STOP"
-    SELL_STOP = "SELL_STOP"
 
 class OrderStatus(Enum):
     """สถานะของออร์เดอร์"""
@@ -47,107 +37,162 @@ class OrderStatus(Enum):
     SENT = "SENT"
     FILLED = "FILLED"
     REJECTED = "REJECTED"
-    CANCELLED = "CANCELLED"
-    PARTIAL_FILLED = "PARTIAL_FILLED"
     ERROR = "ERROR"
 
 @dataclass
 class OrderRequest:
     """คำขอส่งออร์เดอร์"""
     order_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    symbol: str = "XAUUSD"
+    symbol: str = "XAUUSD.v"  # ใช้ XAUUSD.v โดยตรง
     order_type: OrderType = OrderType.BUY
     volume: float = 0.01
-    price: Optional[float] = None          # ราคา (สำหรับ limit/stop orders)
-    sl: Optional[float] = None             # Stop Loss (ห้ามใช้ตาม requirement)
-    tp: Optional[float] = None             # Take Profit (ห้ามใช้ตาม requirement)
-    deviation: int = 10                    # Slippage tolerance (points)
-    magic_number: int = 123456             # Magic number สำหรับระบุออร์เดอร์
-    comment: str = "IntelligentGold"       # Comment
-    type_time: int = mt5.ORDER_TIME_GTC    # Order time type
-    type_filling: int = mt5.ORDER_FILLING_IOC  # Order filling type
-    
-    # ข้อมูลเพิ่มเติม
-    strategy_name: str = ""                # ชื่อกลยุทธ์
-    recovery_level: int = 0                # ระดับ recovery (0 = entry แรก)
-    parent_order_id: Optional[str] = None  # ID ของ parent order
+    price: Optional[float] = None
+    deviation: int = 20
+    magic_number: int = 123456
+    comment: str = "IntelligentGold"
+    strategy_name: str = ""
+    recovery_level: int = 0
     created_at: datetime = field(default_factory=datetime.now)
-    
-    def __post_init__(self):
-        """ตรวจสอบข้อมูลหลังสร้าง"""
-        # ตรวจสอบห้ามใช้ SL/TP ตาม requirement
-        if self.sl is not None:
-            raise ValueError("❌ ห้ามใช้ Stop Loss! ใช้ Recovery System เท่านั้น")
-        if self.tp is not None:
-            raise ValueError("❌ ห้ามใช้ Take Profit! ใช้ Smart Position Management เท่านั้น")
 
 @dataclass
 class OrderResult:
     """ผลการส่งออร์เดอร์"""
     order_id: str
-    mt5_order: Optional[int] = None        # MT5 order ticket
-    mt5_position: Optional[int] = None     # MT5 position ticket
+    mt5_order: Optional[int] = None
+    mt5_position: Optional[int] = None
     status: OrderStatus = OrderStatus.PENDING
-    price_executed: Optional[float] = None # ราคาที่ execute จริง
-    volume_executed: float = 0.0           # Volume ที่ execute จริง
+    price_executed: Optional[float] = None
+    volume_executed: float = 0.0
     execution_time: Optional[datetime] = None
     error_code: Optional[int] = None
     error_description: str = ""
-    slippage: float = 0.0                  # Slippage ที่เกิดขึ้น (points)
-    commission: float = 0.0                # ค่าคอมมิชชั่น
-    swap: float = 0.0                      # ค่า swap
-    profit: float = 0.0                    # กำไร/ขาดทุนปัจจุบัน
-    
-    # เวลาประมวลผล
-    processing_time_ms: float = 0.0        # เวลาที่ใช้ในการส่งออร์เดอร์
-    network_latency_ms: float = 0.0        # Latency ของเครือข่าย
+    fill_type_used: str = ""
+    attempts_made: int = 0
+    processing_time_ms: float = 0.0
 
-class OrderExecutor:
+class SmartOrderExecutor:
     """
-    เครื่องมือส่งออร์เดอร์หลัก
-    รองรับการส่งออร์เดอร์แบบ High-Frequency และจัดการข้อผิดพลาด
+    🧠 Smart Order Executor ที่ลอง Fill Modes หลายแบบ
     """
     
     def __init__(self):
-        self.logger = setup_trading_logger()
-        self.settings = get_system_settings()
-        self.trading_params = get_trading_parameters()
+        # Setup logger
+        self.logger = logging.getLogger("SmartOrderExecutor")
+        self.logger.setLevel(logging.INFO)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
         
-        # ติดตามออร์เดอร์
-        self.pending_orders: Dict[str, OrderRequest] = {}
-        self.completed_orders: Dict[str, OrderResult] = {}
-        self.order_history: List[OrderResult] = []
+        # Symbol settings
+        self.symbol = "XAUUSD.v"  # ใช้ XAUUSD.v โดยตรง
         
-        # Threading
-        self.execution_lock = threading.Lock()
-        self.order_queue = []
-        self.queue_processor_active = False
+        # Fill modes to try (เรียงตามความนิยม)
+        self.fill_modes = [
+            ("FOK", mt5.ORDER_FILLING_FOK, "Fill or Kill"),
+            ("RETURN", mt5.ORDER_FILLING_RETURN, "Market Execution"),
+            ("IOC", mt5.ORDER_FILLING_IOC, "Immediate or Cancel")
+        ]
         
-        # สถิติ
+        # Cache for successful configurations
+        self.successful_configs = {}
+        self.cache_file = "order_config_cache.json"
+        
+        # Order tracking
+        self.pending_orders = {}
+        self.completed_orders = {}
+        self.order_history = []
+        
+        # Statistics
         self.total_orders_sent = 0
         self.successful_orders = 0
         self.failed_orders = 0
-        self.total_execution_time_ms = 0.0
         
-        # เริ่มต้น queue processor
-        self._start_queue_processor()
+        # Initialize system
+        self._initialize_system()
         
-        self.logger.info("📈 เริ่มต้น Order Executor")
-        
-    @handle_trading_errors(ErrorCategory.TRADING, ErrorSeverity.HIGH)
+        self.logger.info("🧠 Smart Order Executor initialized")
+    
+    def _initialize_system(self):
+        """เริ่มต้นระบบ"""
+        try:
+            # Initialize MT5
+            if not mt5.initialize():
+                self.logger.error(f"❌ MT5 initialization failed: {mt5.last_error()}")
+                return False
+            
+            # Load cached configurations
+            self._load_config_cache()
+            
+            # Test symbol
+            self._test_symbol()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ System initialization error: {e}")
+            return False
+    
+    def _test_symbol(self):
+        """ทดสอบ symbol"""
+        try:
+            symbol_info = mt5.symbol_info(self.symbol)
+            if symbol_info is None:
+                self.logger.error(f"❌ Symbol {self.symbol} not found")
+                return False
+            
+            if not symbol_info.visible:
+                if mt5.symbol_select(self.symbol, True):
+                    self.logger.info(f"✅ Selected symbol: {self.symbol}")
+                else:
+                    self.logger.error(f"❌ Failed to select symbol: {self.symbol}")
+                    return False
+            
+            self.logger.info(f"✅ Symbol ready: {self.symbol}")
+            self.logger.info(f"   Trade Mode: {symbol_info.trade_mode}")
+            self.logger.info(f"   Min Volume: {symbol_info.volume_min}")
+            self.logger.info(f"   Max Volume: {symbol_info.volume_max}")
+            self.logger.info(f"   Volume Step: {symbol_info.volume_step}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Symbol test error: {e}")
+            return False
+    
+    def _load_config_cache(self):
+        """โหลด configuration cache"""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r') as f:
+                    self.successful_configs = json.load(f)
+                self.logger.info(f"✅ Loaded config cache: {len(self.successful_configs)} configs")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to load config cache: {e}")
+            self.successful_configs = {}
+    
+    def _save_config_cache(self):
+        """บันทึก configuration cache"""
+        try:
+            with open(self.cache_file, 'w') as f:
+                json.dump(self.successful_configs, f, indent=2)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to save config cache: {e}")
+    
     def send_market_order(self, symbol: str, order_type: OrderType, 
                          volume: float, magic_number: int = 123456,
                          comment: str = "IntelligentGold", 
                          strategy_name: str = "",
                          recovery_level: int = 0) -> OrderResult:
         """
-        ส่งออร์เดอร์ Market แบบทันที
+        ส่งออร์เดอร์ Market โดยลอง Fill Modes หลายแบบ
         """
         start_time = time.time()
         
         # สร้าง OrderRequest
         order_request = OrderRequest(
-            symbol=symbol,
+            symbol=self.symbol,  # ใช้ XAUUSD.v เสมอ
             order_type=order_type,
             volume=volume,
             magic_number=magic_number,
@@ -156,517 +201,439 @@ class OrderExecutor:
             recovery_level=recovery_level
         )
         
-        # ตรวจสอบการเชื่อมต่อ
-        if not ensure_mt5_connection():
-            return self._create_error_result(
-                order_request, "ไม่สามารถเชื่อมต่อ MT5 ได้"
-            )
+        self.logger.info(f"📤 Sending Smart Order: {order_type.value} {volume} {self.symbol}")
         
-        with self.execution_lock:
-            try:
-                # เพิ่มเข้า pending orders
-                self.pending_orders[order_request.order_id] = order_request
-                
-                # Log การส่งออร์เดอร์
-                self.logger.info(
-                    f"📊 ส่งออร์เดอร์ {order_type.value}: {volume} lots {symbol} "
-                    f"Strategy: {strategy_name} Level: {recovery_level}"
-                )
-                
-                # เตรียมข้อมูลออร์เดอร์สำหรับ MT5
-                mt5_order_type = self._convert_order_type_to_mt5(order_type)
-                
-                # ดึงราคาปัจจุบัน
-                tick = mt5.symbol_info_tick(symbol)
-                if tick is None:
-                    return self._create_error_result(
-                        order_request, f"ไม่สามารถดึงราคา {symbol} ได้"
-                    )
-                
-                # กำหนดราคาสำหรับออร์เดอร์
-                if order_type in [OrderType.BUY]:
-                    price = tick.ask
-                elif order_type in [OrderType.SELL]:
-                    price = tick.bid
-                else:
-                    return self._create_error_result(
-                        order_request, f"ประเภทออร์เดอร์ไม่รองรับ: {order_type}"
-                    )
-                
-                # สร้าง trade request
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": volume,
-                    "type": mt5_order_type,
-                    "price": price,
-                    "deviation": order_request.deviation,
-                    "magic": magic_number,
-                    "comment": comment,
-                    "type_time": order_request.type_time,
-                    "type_filling": order_request.type_filling,
-                }
-                
-                # ส่งออร์เดอร์
-                result = mt5.order_send(request)
-                
-                if result is None:
-                    return self._create_error_result(
-                        order_request, "MT5 order_send คืนค่า None"
-                    )
-                
-                # ประมวลผลลัพธ์
-                processing_time = (time.time() - start_time) * 1000
-                order_result = self._process_order_result(
-                    order_request, result, processing_time
-                )
-                
-                # อัพเดทสถิติ
-                self.total_orders_sent += 1
-                self.total_execution_time_ms += processing_time
-                
-                if order_result.status == OrderStatus.FILLED:
-                    self.successful_orders += 1
-                    self.logger.info(
-                        f"✅ ออร์เดอร์สำเร็จ: Ticket {order_result.mt5_order} "
-                        f"Price: {order_result.price_executed} "
-                        f"Time: {processing_time:.2f}ms"
-                    )
-                else:
-                    self.failed_orders += 1
-                    self.logger.error(
-                        f"❌ ออร์เดอร์ไม่สำเร็จ: {order_result.error_description} "
-                        f"Code: {order_result.error_code}"
-                    )
-                
-                # ลบออกจาก pending orders
-                self.pending_orders.pop(order_request.order_id, None)
-                
-                # เพิ่มเข้า completed orders
-                self.completed_orders[order_request.order_id] = order_result
-                self.order_history.append(order_result)
-                
-                return order_result
-                
-            except Exception as e:
-                self.logger.error(f"❌ Exception ในการส่งออร์เดอร์: {e}")
-                return self._create_error_result(order_request, str(e))
+        # ลองส่งออร์เดอร์ด้วยวิธีต่างๆ
+        result = self._smart_order_execution(order_request)
+        
+        # อัพเดทสถิติ
+        if result.status == OrderStatus.FILLED:
+            self.successful_orders += 1
+            self.logger.info(f"✅ Order Success: {result.fill_type_used} | "
+                           f"Price: {result.price_executed:.2f} | "
+                           f"Attempts: {result.attempts_made}")
+        else:
+            self.failed_orders += 1
+            self.logger.error(f"❌ Order Failed: {result.error_description} | "
+                            f"Attempts: {result.attempts_made}")
+        
+        self.total_orders_sent += 1
+        result.processing_time_ms = (time.time() - start_time) * 1000
+        
+        # เก็บประวัติ
+        self.completed_orders[order_request.order_id] = result
+        self.order_history.append(result)
+        
+        return result
     
-    @handle_trading_errors(ErrorCategory.TRADING, ErrorSeverity.MEDIUM)
-    def send_pending_order(self, symbol: str, order_type: OrderType,
-                          volume: float, price: float,
-                          magic_number: int = 123456,
-                          comment: str = "IntelligentGold",
-                          strategy_name: str = "",
-                          recovery_level: int = 0) -> OrderResult:
-        """
-        ส่งออร์เดอร์ Pending (Limit/Stop)
-        """
-        start_time = time.time()
+    def _smart_order_execution(self, order_request: OrderRequest) -> OrderResult:
+        """ส่งออร์เดอร์อย่างชาญฉลาด - ลองหลายวิธี"""
         
-        # สร้าง OrderRequest
-        order_request = OrderRequest(
-            symbol=symbol,
-            order_type=order_type,
-            volume=volume,
-            price=price,
-            magic_number=magic_number,
-            comment=comment,
-            strategy_name=strategy_name,
-            recovery_level=recovery_level
-        )
-        
-        # ตรวจสอบการเชื่อมต่อ
-        if not ensure_mt5_connection():
-            return self._create_error_result(
-                order_request, "ไม่สามารถเชื่อมต่อ MT5 ได้"
-            )
-        
-        with self.execution_lock:
-            try:
-                # เพิ่มเข้า pending orders
-                self.pending_orders[order_request.order_id] = order_request
-                
-                # Log การส่งออร์เดอร์
-                self.logger.info(
-                    f"📊 ส่งออร์เดอร์ Pending {order_type.value}: {volume} lots {symbol} "
-                    f"@ {price} Strategy: {strategy_name}"
-                )
-                
-                # เตรียมข้อมูลออร์เดอร์สำหรับ MT5
-                mt5_order_type = self._convert_order_type_to_mt5(order_type)
-                
-                # สร้าง trade request
-                request = {
-                    "action": mt5.TRADE_ACTION_PENDING,
-                    "symbol": symbol,
-                    "volume": volume,
-                    "type": mt5_order_type,
-                    "price": price,
-                    "magic": magic_number,
-                    "comment": comment,
-                    "type_time": order_request.type_time,
-                    "type_filling": order_request.type_filling,
-                }
-                
-                # ส่งออร์เดอร์
-                result = mt5.order_send(request)
-                
-                if result is None:
-                    return self._create_error_result(
-                        order_request, "MT5 order_send คืนค่า None"
-                    )
-                
-                # ประมวลผลลัพธ์
-                processing_time = (time.time() - start_time) * 1000
-                order_result = self._process_order_result(
-                    order_request, result, processing_time
-                )
-                
-                # อัพเดทสถิติ
-                self.total_orders_sent += 1
-                self.total_execution_time_ms += processing_time
-                
-                # ลบออกจาก pending orders
-                self.pending_orders.pop(order_request.order_id, None)
-                
-                # เพิ่มเข้า completed orders
-                self.completed_orders[order_request.order_id] = order_result
-                self.order_history.append(order_result)
-                
-                return order_result
-                
-            except Exception as e:
-                self.logger.error(f"❌ Exception ในการส่งออร์เดอร์ Pending: {e}")
-                return self._create_error_result(order_request, str(e))
-    
-    @handle_trading_errors(ErrorCategory.TRADING, ErrorSeverity.MEDIUM)
-    def close_position(self, position_ticket: int, volume: Optional[float] = None,
-                      comment: str = "IntelligentGold_Close") -> OrderResult:
-        """
-        ปิด Position
-        """
-        start_time = time.time()
-        
-        # ตรวจสอบการเชื่อมต่อ
-        if not ensure_mt5_connection():
-            return self._create_error_result(
-                None, "ไม่สามารถเชื่อมต่อ MT5 ได้"
-            )
-        
-        with self.execution_lock:
-            try:
-                # ดึงข้อมูล position
-                positions = mt5.positions_get(ticket=position_ticket)
-                if not positions:
-                    return self._create_error_result(
-                        None, f"ไม่พบ Position {position_ticket}"
-                    )
-                
-                position = positions[0]
-                
-                # กำหนด volume ถ้าไม่ได้ระบุ
-                if volume is None:
-                    volume = position.volume
-                
-                # กำหนดประเภทออร์เดอร์ปิด
-                if position.type == mt5.POSITION_TYPE_BUY:
-                    order_type = mt5.ORDER_TYPE_SELL
-                    price = mt5.symbol_info_tick(position.symbol).bid
-                else:
-                    order_type = mt5.ORDER_TYPE_BUY
-                    price = mt5.symbol_info_tick(position.symbol).ask
-                
-                # สร้าง close request
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": position.symbol,
-                    "volume": volume,
-                    "type": order_type,
-                    "position": position_ticket,
-                    "price": price,
-                    "deviation": 10,
-                    "magic": position.magic,
-                    "comment": comment,
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
-                }
-                
-                # ส่งคำสั่งปิด
-                result = mt5.order_send(request)
-                
-                if result is None:
-                    return self._create_error_result(
-                        None, "MT5 order_send คืนค่า None สำหรับการปิด position"
-                    )
-                
-                # สร้าง OrderRequest สำหรับการปิด
-                close_request = OrderRequest(
-                    symbol=position.symbol,
-                    order_type=OrderType.SELL if position.type == mt5.POSITION_TYPE_BUY else OrderType.BUY,
-                    volume=volume,
-                    magic_number=position.magic,
-                    comment=comment
-                )
-                
-                # ประมวลผลลัพธ์
-                processing_time = (time.time() - start_time) * 1000
-                order_result = self._process_order_result(
-                    close_request, result, processing_time
-                )
-                
-                # Log ผลการปิด position
-                if order_result.status == OrderStatus.FILLED:
-                    self.logger.info(
-                        f"✅ ปิด Position สำเร็จ: {position_ticket} "
-                        f"Volume: {volume} Price: {order_result.price_executed}"
-                    )
-                else:
-                    self.logger.error(
-                        f"❌ ปิด Position ไม่สำเร็จ: {order_result.error_description}"
-                    )
-                
-                return order_result
-                
-            except Exception as e:
-                self.logger.error(f"❌ Exception ในการปิด Position: {e}")
-                return self._create_error_result(None, str(e))
-    
-    def cancel_pending_order(self, order_ticket: int) -> bool:
-        """
-        ยกเลิกออร์เดอร์ Pending
-        """
-        try:
-            # ตรวจสอบการเชื่อมต่อ
-            if not ensure_mt5_connection():
-                return False
+        # ดึง cache configuration ถ้ามี
+        cache_key = f"{order_request.order_type.value}_{order_request.volume}"
+        if cache_key in self.successful_configs:
+            cached_config = self.successful_configs[cache_key]
+            self.logger.info(f"🎯 Using cached config: {cached_config['fill_type']}")
             
-            # สร้าง cancel request
-            request = {
-                "action": mt5.TRADE_ACTION_REMOVE,
-                "order": order_ticket,
+            result = self._try_single_execution(order_request, cached_config)
+            if result.status == OrderStatus.FILLED:
+                return result
+            else:
+                self.logger.warning(f"⚠️ Cached config failed, trying all methods...")
+        
+        # ลองทุกวิธี
+        for attempt, (fill_name, fill_type, description) in enumerate(self.fill_modes, 1):
+            self.logger.info(f"🔄 Attempt {attempt}: {fill_name} ({description})")
+            
+            config = {
+                'fill_type': fill_type,
+                'fill_name': fill_name,
+                'deviation': order_request.deviation
             }
             
-            # ส่งคำสั่งยกเลิก
-            result = mt5.order_send(request)
+            result = self._try_single_execution(order_request, config)
+            result.attempts_made = attempt
+            result.fill_type_used = fill_name
             
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                self.logger.info(f"✅ ยกเลิกออร์เดอร์สำเร็จ: {order_ticket}")
-                return True
+            if result.status == OrderStatus.FILLED:
+                # บันทึก config ที่สำเร็จ
+                self.successful_configs[cache_key] = config
+                self._save_config_cache()
+                return result
+            
+            # ถ้าเป็น Invalid Fill ลองต่อ
+            if "invalid fill" in result.error_description.lower():
+                continue
+            
+            # ถ้าเป็น error อื่น ลองปรับ deviation
+            if "price changed" in result.error_description.lower():
+                self.logger.info(f"🔄 Price changed, trying higher deviation...")
+                config['deviation'] = 50
+                result2 = self._try_single_execution(order_request, config)
+                if result2.status == OrderStatus.FILLED:
+                    result2.attempts_made = attempt
+                    result2.fill_type_used = f"{fill_name} (High Dev)"
+                    return result2
+            
+            # ถ้าเป็น volume error ลองปรับ volume
+            if "volume" in result.error_description.lower():
+                self.logger.info(f"🔄 Volume error, trying minimum volume...")
+                original_volume = order_request.volume
+                order_request.volume = 0.01  # ลองใช้ minimum
+                result3 = self._try_single_execution(order_request, config)
+                order_request.volume = original_volume  # คืนค่าเดิม
+                if result3.status == OrderStatus.FILLED:
+                    result3.attempts_made = attempt
+                    result3.fill_type_used = f"{fill_name} (Min Vol)"
+                    return result3
+            
+            # รอสักครู่ก่อนลองต่อ
+            time.sleep(0.5)
+        
+        # ถ้าลองหมดแล้วยังไม่ได้
+        result.error_description = f"All fill types failed. Last error: {result.error_description}"
+        return result
+    
+    def _try_single_execution(self, order_request: OrderRequest, config: Dict) -> OrderResult:
+        """ลองส่งออร์เดอร์ครั้งเดียว"""
+        try:
+            # Get current tick
+            tick = mt5.symbol_info_tick(order_request.symbol)
+            if tick is None:
+                return OrderResult(
+                    order_id=order_request.order_id,
+                    status=OrderStatus.ERROR,
+                    error_description=f"No tick data for {order_request.symbol}"
+                )
+            
+            # กำหนดราคา
+            if order_request.order_type == OrderType.BUY:
+                price = tick.ask
+                mt5_order_type = mt5.ORDER_TYPE_BUY
             else:
-                self.logger.error(f"❌ ยกเลิกออร์เดอร์ไม่สำเร็จ: {result.retcode if result else 'None'}")
-                return False
+                price = tick.bid
+                mt5_order_type = mt5.ORDER_TYPE_SELL
+            
+            # สร้าง MT5 request
+            mt5_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": order_request.symbol,
+                "volume": order_request.volume,
+                "type": mt5_order_type,
+                "price": price,
+                "deviation": config.get('deviation', 20),
+                "magic": order_request.magic_number,
+                "comment": order_request.comment,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": config['fill_type'],
+            }
+            
+            # ส่งออร์เดอร์
+            result = mt5.order_send(mt5_request)
+            
+            if result is None:
+                return OrderResult(
+                    order_id=order_request.order_id,
+                    status=OrderStatus.ERROR,
+                    error_description="MT5 order_send returned None"
+                )
+            
+            # ประมวลผลผลลัพธ์
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                return OrderResult(
+                    order_id=order_request.order_id,
+                    mt5_order=result.order,
+                    mt5_position=result.deal,
+                    status=OrderStatus.FILLED,
+                    price_executed=result.price,
+                    volume_executed=result.volume,
+                    execution_time=datetime.now(),
+                    fill_type_used=config['fill_name']
+                )
+            else:
+                error_desc = self._get_error_description(result.retcode)
+                return OrderResult(
+                    order_id=order_request.order_id,
+                    status=OrderStatus.REJECTED,
+                    error_code=result.retcode,
+                    error_description=error_desc,
+                    fill_type_used=config['fill_name']
+                )
                 
         except Exception as e:
-            self.logger.error(f"❌ Exception ในการยกเลิกออร์เดอร์: {e}")
-            return False
+            return OrderResult(
+                order_id=order_request.order_id,
+                status=OrderStatus.ERROR,
+                error_description=str(e),
+                fill_type_used=config.get('fill_name', 'Unknown')
+            )
     
-    def _convert_order_type_to_mt5(self, order_type: OrderType) -> int:
-        """แปลงประเภทออร์เดอร์เป็นรูปแบบ MT5"""
-        conversion_map = {
-            OrderType.BUY: mt5.ORDER_TYPE_BUY,
-            OrderType.SELL: mt5.ORDER_TYPE_SELL,
-            OrderType.BUY_LIMIT: mt5.ORDER_TYPE_BUY_LIMIT,
-            OrderType.SELL_LIMIT: mt5.ORDER_TYPE_SELL_LIMIT,
-            OrderType.BUY_STOP: mt5.ORDER_TYPE_BUY_STOP,
-            OrderType.SELL_STOP: mt5.ORDER_TYPE_SELL_STOP,
-        }
-        return conversion_map.get(order_type, mt5.ORDER_TYPE_BUY)
-    
-    def _process_order_result(self, order_request: OrderRequest, 
-                            mt5_result, processing_time: float) -> OrderResult:
-        """ประมวลผลลัพธ์จาก MT5"""
-        
-        # สร้าง OrderResult พื้นฐาน
-        order_result = OrderResult(
-            order_id=order_request.order_id,
-            processing_time_ms=processing_time,
-            execution_time=datetime.now()
-        )
-        
-        if mt5_result.retcode == mt5.TRADE_RETCODE_DONE:
-            # ออร์เดอร์สำเร็จ
-            order_result.status = OrderStatus.FILLED
-            order_result.mt5_order = mt5_result.order
-            order_result.price_executed = mt5_result.price
-            order_result.volume_executed = mt5_result.volume
-            
-            # คำนวณ slippage
-            if order_request.price:
-                order_result.slippage = abs(mt5_result.price - order_request.price)
-            
-            # ดึงข้อมูล position ถ้ามี
-            if hasattr(mt5_result, 'position') and mt5_result.position:
-                order_result.mt5_position = mt5_result.position
-                
-                # ดึงข้อมูล position เพิ่มเติม
-                positions = mt5.positions_get(ticket=mt5_result.position)
-                if positions:
-                    position = positions[0]
-                    order_result.commission = position.commission
-                    order_result.swap = position.swap
-                    order_result.profit = position.profit
-        
-        else:
-            # ออร์เดอร์ไม่สำเร็จ
-            order_result.status = OrderStatus.REJECTED
-            order_result.error_code = mt5_result.retcode
-            order_result.error_description = self._get_error_description(mt5_result.retcode)
-        
-        return order_result
-    
-    def _get_error_description(self, error_code: int) -> str:
-        """แปลง Error Code เป็นคำอธิบาย"""
-        error_descriptions = {
+    def _get_error_description(self, retcode: int) -> str:
+        """แปลง MT5 error code เป็นคำอธิบาย"""
+        error_codes = {
             mt5.TRADE_RETCODE_REQUOTE: "Requote",
             mt5.TRADE_RETCODE_REJECT: "Request rejected",
-            mt5.TRADE_RETCODE_CANCEL: "Request canceled by trader",
+            mt5.TRADE_RETCODE_CANCEL: "Request canceled",
             mt5.TRADE_RETCODE_PLACED: "Order placed",
             mt5.TRADE_RETCODE_DONE: "Request completed",
-            mt5.TRADE_RETCODE_DONE_PARTIAL: "Request completed partially",
-            mt5.TRADE_RETCODE_ERROR: "Request processing error",
-            mt5.TRADE_RETCODE_TIMEOUT: "Request canceled by timeout",
+            mt5.TRADE_RETCODE_DONE_PARTIAL: "Partially filled",
+            mt5.TRADE_RETCODE_ERROR: "Common error",
+            mt5.TRADE_RETCODE_TIMEOUT: "Timeout",
             mt5.TRADE_RETCODE_INVALID: "Invalid request",
-            mt5.TRADE_RETCODE_INVALID_VOLUME: "Invalid volume in the request",
-            mt5.TRADE_RETCODE_INVALID_PRICE: "Invalid price in the request",
-            mt5.TRADE_RETCODE_INVALID_STOPS: "Invalid stops in the request",
-            mt5.TRADE_RETCODE_TRADE_DISABLED: "Trade is disabled",
-            mt5.TRADE_RETCODE_MARKET_CLOSED: "Market is closed",
-            mt5.TRADE_RETCODE_NO_MONEY: "There is not enough money to complete the request",
+            mt5.TRADE_RETCODE_INVALID_VOLUME: "Invalid volume",
+            mt5.TRADE_RETCODE_INVALID_PRICE: "Invalid price",
+            mt5.TRADE_RETCODE_INVALID_STOPS: "Invalid stops",
+            mt5.TRADE_RETCODE_TRADE_DISABLED: "Trade disabled",
+            mt5.TRADE_RETCODE_MARKET_CLOSED: "Market closed",
+            mt5.TRADE_RETCODE_NO_MONEY: "No money",
             mt5.TRADE_RETCODE_PRICE_CHANGED: "Price changed",
-            mt5.TRADE_RETCODE_PRICE_OFF: "Price off",
-            mt5.TRADE_RETCODE_INVALID_EXPIRATION: "Invalid request expiration",
-            mt5.TRADE_RETCODE_ORDER_CHANGED: "Order state changed",
+            mt5.TRADE_RETCODE_PRICE_OFF: "Off quotes",
+            mt5.TRADE_RETCODE_INVALID_EXPIRATION: "Invalid expiration",
+            mt5.TRADE_RETCODE_ORDER_CHANGED: "Order changed",
             mt5.TRADE_RETCODE_TOO_MANY_REQUESTS: "Too many requests",
-            mt5.TRADE_RETCODE_NO_CHANGES: "No changes in request",
-            mt5.TRADE_RETCODE_SERVER_DISABLES_AT: "Autotrading disabled by server",
-            mt5.TRADE_RETCODE_CLIENT_DISABLES_AT: "Autotrading disabled by client",
-            mt5.TRADE_RETCODE_LOCKED: "Request locked for processing",
-            mt5.TRADE_RETCODE_FROZEN: "Order or position frozen",
-            mt5.TRADE_RETCODE_INVALID_FILL: "Invalid order filling type",
-            mt5.TRADE_RETCODE_CONNECTION: "No connection with the trade server",
-            mt5.TRADE_RETCODE_ONLY_REAL: "Operation is allowed only for live accounts",
-            mt5.TRADE_RETCODE_LIMIT_ORDERS: "The number of pending orders has reached the limit",
-            mt5.TRADE_RETCODE_LIMIT_VOLUME: "The volume of orders and positions for the symbol has reached the limit",
+            mt5.TRADE_RETCODE_NO_CHANGES: "No changes",
+            mt5.TRADE_RETCODE_SERVER_DISABLES_AT: "Auto trading disabled by server",
+            mt5.TRADE_RETCODE_CLIENT_DISABLES_AT: "Auto trading disabled by client",
+            mt5.TRADE_RETCODE_LOCKED: "Request locked",
+            mt5.TRADE_RETCODE_FROZEN: "Order frozen",
+            mt5.TRADE_RETCODE_INVALID_FILL: "Invalid fill",
+            mt5.TRADE_RETCODE_CONNECTION: "Connection error",
+            mt5.TRADE_RETCODE_ONLY_REAL: "Only real accounts",
+            mt5.TRADE_RETCODE_LIMIT_ORDERS: "Orders limit",
+            mt5.TRADE_RETCODE_LIMIT_VOLUME: "Volume limit"
         }
         
-        return error_descriptions.get(error_code, f"Unknown error: {error_code}")
+        return error_codes.get(retcode, f"Unknown error code: {retcode}")
     
-    def _create_error_result(self, order_request: Optional[OrderRequest], 
-                           error_message: str) -> OrderResult:
-        """สร้าง OrderResult สำหรับข้อผิดพลาด"""
-        order_id = order_request.order_id if order_request else str(uuid.uuid4())
-        
-        return OrderResult(
-            order_id=order_id,
-            status=OrderStatus.ERROR,
-            error_description=error_message,
-            execution_time=datetime.now()
-        )
+    def get_open_positions(self, symbol: str = None) -> List[Dict]:
+        """ดึงรายการ positions ที่เปิดอยู่"""
+        try:
+            if symbol:
+                positions = mt5.positions_get(symbol=symbol)
+            else:
+                positions = mt5.positions_get()
+            
+            if positions is None:
+                return []
+            
+            result = []
+            for position in positions:
+                result.append({
+                    'ticket': position.ticket,
+                    'symbol': position.symbol,
+                    'type': 'BUY' if position.type == 0 else 'SELL',
+                    'volume': position.volume,
+                    'price_open': position.price_open,
+                    'price_current': position.price_current,
+                    'profit': position.profit,
+                    'swap': position.swap,
+                    'commission': position.commission,
+                    'time': datetime.fromtimestamp(position.time),
+                    'comment': position.comment,
+                    'magic': position.magic
+                })
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting positions: {e}")
+            return []
     
-    def _start_queue_processor(self):
-        """เริ่ม thread สำหรับประมวลผล order queue"""
-        if self.queue_processor_active:
-            return
-        
-        self.queue_processor_active = True
-        queue_thread = threading.Thread(
-            target=self._process_order_queue,
-            daemon=True,
-            name="OrderQueueProcessor"
-        )
-        queue_thread.start()
-        self.logger.info("🚀 เริ่มต้น Order Queue Processor")
-    
-    def _process_order_queue(self):
-        """ประมวลผล order queue (สำหรับอนาคต)"""
-        while self.queue_processor_active:
-            try:
-                # TODO: Implement order queue processing for high-frequency trading
-                time.sleep(0.1)  # 100ms interval
+    def close_position(self, ticket: int) -> OrderResult:
+        """ปิด position"""
+        try:
+            position = mt5.positions_get(ticket=ticket)
+            if not position:
+                return OrderResult(
+                    order_id=str(uuid.uuid4()),
+                    status=OrderStatus.ERROR,
+                    error_description=f"Position {ticket} not found"
+                )
+            
+            position = position[0]
+            
+            # ลองใช้ config ที่เหมาะสม
+            cache_key = f"CLOSE_{position.volume}"
+            if cache_key in self.successful_configs:
+                fill_config = self.successful_configs[cache_key]
+            else:
+                fill_config = {'fill_type': mt5.ORDER_FILLING_FOK, 'fill_name': 'FOK'}
+            
+            # สร้าง close request
+            if position.type == 0:  # BUY position
+                price = mt5.symbol_info_tick(position.symbol).bid
+                order_type = mt5.ORDER_TYPE_SELL
+            else:  # SELL position
+                price = mt5.symbol_info_tick(position.symbol).ask
+                order_type = mt5.ORDER_TYPE_BUY
+            
+            close_request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": position.symbol,
+                "volume": position.volume,
+                "type": order_type,
+                "position": ticket,
+                "price": price,
+                "deviation": 20,
+                "magic": position.magic,
+                "comment": f"Close_{ticket}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": fill_config['fill_type'],
+            }
+            
+            result = mt5.order_send(close_request)
+            
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(f"✅ Position closed: {ticket}")
+                return OrderResult(
+                    order_id=str(uuid.uuid4()),
+                    mt5_order=result.order,
+                    mt5_position=result.deal,
+                    status=OrderStatus.FILLED,
+                    price_executed=result.price,
+                    volume_executed=result.volume,
+                    execution_time=datetime.now(),
+                    fill_type_used=fill_config['fill_name']
+                )
+            else:
+                # ลองใช้ fill type อื่น
+                for fill_name, fill_type, _ in self.fill_modes:
+                    close_request["type_filling"] = fill_type
+                    result = mt5.order_send(close_request)
+                    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                        self.logger.info(f"✅ Position closed with {fill_name}: {ticket}")
+                        return OrderResult(
+                            order_id=str(uuid.uuid4()),
+                            status=OrderStatus.FILLED,
+                            fill_type_used=fill_name
+                        )
                 
-            except Exception as e:
-                self.logger.error(f"❌ Error in order queue processor: {e}")
-                time.sleep(1.0)
+                error_desc = self._get_error_description(result.retcode) if result else "Unknown error"
+                return OrderResult(
+                    order_id=str(uuid.uuid4()),
+                    status=OrderStatus.REJECTED,
+                    error_description=error_desc
+                )
+                
+        except Exception as e:
+            self.logger.error(f"❌ Close position error: {e}")
+            return OrderResult(
+                order_id=str(uuid.uuid4()),
+                status=OrderStatus.ERROR,
+                error_description=str(e)
+            )
     
-    def get_execution_statistics(self) -> Dict:
-        """ดึงสถิติการส่งออร์เดอร์"""
-        success_rate = (
-            (self.successful_orders / self.total_orders_sent * 100) 
-            if self.total_orders_sent > 0 else 0
-        )
-        
-        avg_execution_time = (
-            (self.total_execution_time_ms / self.total_orders_sent)
-            if self.total_orders_sent > 0 else 0
-        )
-        
+    def get_statistics(self) -> Dict[str, any]:
+        """ดึงสถิติการทำงาน"""
         return {
-            "total_orders": self.total_orders_sent,
-            "successful_orders": self.successful_orders,
-            "failed_orders": self.failed_orders,
-            "success_rate_percent": round(success_rate, 2),
-            "average_execution_time_ms": round(avg_execution_time, 2),
-            "pending_orders_count": len(self.pending_orders),
-            "completed_orders_count": len(self.completed_orders)
+            'total_orders_sent': self.total_orders_sent,
+            'successful_orders': self.successful_orders,
+            'failed_orders': self.failed_orders,
+            'success_rate': (self.successful_orders / max(self.total_orders_sent, 1)) * 100,
+            'symbol_used': self.symbol,
+            'cached_configs': len(self.successful_configs),
+            'pending_orders': len(self.pending_orders),
+            'completed_orders': len(self.completed_orders)
         }
     
-    def get_recent_orders(self, limit: int = 10) -> List[OrderResult]:
-        """ดึงออร์เดอร์ล่าสุด"""
-        return self.order_history[-limit:] if self.order_history else []
-
-# === HELPER FUNCTIONS ===
-
-def quick_buy(symbol: str = "XAUUSD", volume: float = 0.01, 
-              strategy: str = "", recovery_level: int = 0) -> OrderResult:
-    """ฟังก์ชันช่วยสำหรับซื้อแบบเร็ว"""
-    executor = get_order_executor()
-    return executor.send_market_order(
-        symbol=symbol,
-        order_type=OrderType.BUY,
-        volume=volume,
-        strategy_name=strategy,
-        recovery_level=recovery_level
-    )
-
-def quick_sell(symbol: str = "XAUUSD", volume: float = 0.01,
-               strategy: str = "", recovery_level: int = 0) -> OrderResult:
-    """ฟังก์ชันช่วยสำหรับขายแบบเร็ว"""
-    executor = get_order_executor()
-    return executor.send_market_order(
-        symbol=symbol,
-        order_type=OrderType.SELL,
-        volume=volume,
-        strategy_name=strategy,
-        recovery_level=recovery_level
-    )
-
-def close_all_positions(symbol: str = "XAUUSD") -> List[OrderResult]:
-    """ปิด positions ทั้งหมดของ symbol"""
-    if not ensure_mt5_connection():
-        return []
+    def test_all_fill_modes(self):
+        """ทดสอบ Fill Modes ทั้งหมด (แบบ dry run)"""
+        self.logger.info("🧪 Testing all fill modes...")
+        
+        try:
+            tick = mt5.symbol_info_tick(self.symbol)
+            if tick is None:
+                self.logger.error("❌ No tick data")
+                return
+            
+            for fill_name, fill_type, description in self.fill_modes:
+                test_request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": self.symbol,
+                    "volume": 0.01,
+                    "type": mt5.ORDER_TYPE_BUY,
+                    "price": tick.ask,
+                    "deviation": 20,
+                    "magic": 123456,
+                    "comment": "TEST",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": fill_type,
+                }
+                
+                check_result = mt5.order_check(test_request)
+                if check_result and check_result.retcode == mt5.TRADE_RETCODE_DONE:
+                    self.logger.info(f"✅ {fill_name} ({description}) - WORKS")
+                else:
+                    error = self._get_error_description(check_result.retcode) if check_result else "Unknown"
+                    self.logger.warning(f"❌ {fill_name} ({description}) - {error}")
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Test error: {e}")
     
-    executor = get_order_executor()
-    results = []
-    
-    # ดึง positions ทั้งหมด
-    positions = mt5.positions_get(symbol=symbol)
-    if not positions:
-        return results
-    
-    # ปิดทีละ position
-    for position in positions:
-        result = executor.close_position(position.ticket)
-        results.append(result)
-    
-    return results
+    def shutdown(self):
+        """ปิดระบบ"""
+        try:
+            self._save_config_cache()
+            mt5.shutdown()
+        except:
+            pass
+        self.logger.info("🛑 Smart Order Executor shutdown")
 
-# === GLOBAL ORDER EXECUTOR INSTANCE ===
-_global_order_executor: Optional[OrderExecutor] = None
+# Backward compatibility functions
+def get_order_executor():
+    """ได้ Order Executor instance (Backward Compatibility)"""
+    return get_smart_order_executor()
 
-def get_order_executor() -> OrderExecutor:
-    """ดึง Order Executor แบบ Singleton"""
-    global _global_order_executor
-    if _global_order_executor is None:
-        _global_order_executor = OrderExecutor()
-    return _global_order_executor
+# For main_window.py compatibility
+class OrderExecutor:
+    """Wrapper class for backward compatibility"""
+    def __init__(self):
+        self.smart_executor = SmartOrderExecutor()
+    
+    def send_market_order(self, **kwargs):
+        return self.smart_executor.send_market_order(**kwargs)
+    
+    def get_open_positions(self, symbol=None):
+        return self.smart_executor.get_open_positions(symbol)
+    
+    def close_position(self, ticket):
+        return self.smart_executor.close_position(ticket)
+    
+    def get_statistics(self):
+        return self.smart_executor.get_statistics()
+    
+    def shutdown(self):
+        return self.smart_executor.shutdown()
+
+# Global instances
+_smart_executor_instance = None
+_order_executor_instance = None
+
+def get_smart_order_executor():
+    """ได้ Smart Order Executor instance"""
+    global _smart_executor_instance
+    if _smart_executor_instance is None:
+        _smart_executor_instance = SmartOrderExecutor()
+    return _smart_executor_instance
+
+def get_order_executor():
+    """ได้ Order Executor instance (Backward Compatibility)"""
+    global _order_executor_instance
+    if _order_executor_instance is None:
+        _order_executor_instance = OrderExecutor()
+    return _order_executor_instance
+
+if __name__ == "__main__":
+    print("🧠 Testing Smart Order Executor")
+    
+    executor = SmartOrderExecutor()
+    
+    # Test all fill modes
+    executor.test_all_fill_modes()
+    
+    # Show statistics
+    stats = executor.get_statistics()
+    print(f"\nStatistics: {stats}")
+    
+    print("\n✅ Smart Order Executor ready!")
+    print("This will automatically try different fill modes until orders succeed.")

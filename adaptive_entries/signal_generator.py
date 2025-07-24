@@ -124,7 +124,7 @@ class MT5DataProvider:
     def __init__(self):
         self.logger = logging.getLogger("MT5DataProvider")
         self.connected = False
-        self.symbol = "XAUUSD"
+        self.symbol = "XAUUSD.v"
         
     def initialize_mt5(self) -> bool:
         """เริ่มต้นการเชื่อมต่อ MT5"""

@@ -1,0 +1,12 @@
+{
+  "SELL_0.01": {
+    "fill_type": 0,
+    "fill_name": "FOK",
+    "deviation": 20
+  },
+  "BUY_0.01": {
+    "fill_type": 0,
+    "fill_name": "FOK",
+    "deviation": 20
+  }
+}
