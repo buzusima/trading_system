@@ -135,7 +135,7 @@ class TradeRecord:
     # Basic Information
     trade_id: str
     position_id: str
-    symbol: str = "XAUUSD"
+    symbol: str = "XAUUSD.v"
     
     # Trade Details
     trade_type: TradeType = TradeType.REGULAR

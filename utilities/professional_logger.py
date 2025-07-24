@@ -321,3 +321,17 @@ def log_trading_action(action_type: str):
                 raise
         return wrapper
     return decorator
+
+def setup_component_logger(component_name: str):
+    """Setup component logger"""
+    import logging
+    logger = logging.getLogger(f"TradingSystem.{component_name}")
+    logger.setLevel(logging.INFO)
+    
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(f'%(asctime)s - {component_name} - %(levelname)s - %(message)s')  
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    
+    return logger

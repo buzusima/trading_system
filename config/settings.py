@@ -68,47 +68,43 @@ class SystemSettings:
     min_entry_interval_seconds: int = 10     # ช่วงเวลาขั้นต่ำระหว่างการเข้าออร์เดอร์
     
     # === MT5 CONNECTION SETTINGS ===
-    mt5_server: Optional[str] = None         # จะตั้งค่าจาก MT5
-    mt5_login: Optional[int] = None          # จะตั้งค่าจาก MT5  
-    mt5_password: Optional[str] = None       # จะตั้งค่าจาก MT5
-    mt5_path: Optional[str] = None           # Path ไปยัง MT5
+    # 🚀 AUTO-DETECT: ระบบจะดึงข้อมูลจาก MT5 ที่ Login ไว้แล้วอัตโนมัติ
+    mt5_login: Optional[int] = None             # จะดึงจาก MT5 ที่เปิดอยู่
+    mt5_password: Optional[str] = None          # ไม่ต้องใส่รหัสผ่าน
+    mt5_server: Optional[str] = None            # จะดึงจาก MT5 ที่เปิดอยู่
+    mt5_path: Optional[str] = None              # Path ไปยัง terminal64.exe (ถ้าไม่ระบุจะหาอัตโนมัติ)
+    use_existing_connection: bool = True        # ใช้การเชื่อมต่อที่มีอยู่แล้ว
     
-    connection_timeout: int = 30             # Timeout สำหรับการเชื่อมต่อ (วินาที)
-    reconnect_attempts: int = 5              # จำนวนครั้งในการ reconnect
-    order_execution_timeout: int = 10        # Timeout สำหรับการส่งออร์เดอร์
-    
-    # === POSITION MANAGEMENT ===
-    unlimited_positions: bool = True         # ✅ ไม่จำกัดจำนวน positions
-    position_tracking_precision: int = 5     # ทศนิยม 5 ตำแหน่ง
-    
-    # === MONEY MANAGEMENT ===
-    base_lot_size: float = 0.01             # ขนาด lot พื้นฐาน
-    account_balance_buffer: float = 0.95     # ใช้ 95% ของ balance (5% buffer)
+    connection_timeout: int = 30                # Timeout การเชื่อมต่อ (วินาที)
+    reconnect_attempts: int = 5                 # จำนวนครั้งที่พยายาม reconnect
     
     # === GUI SETTINGS ===
-    gui_update_interval: int = 500           # มิลลิวินาที - อัพเดท GUI
-    gui_theme: str = "professional_dark"     # ธีมของ GUI
+    gui_update_interval: int = 1000            # GUI update ทุก 1 วินาที
+    enable_real_time_charts: bool = True       # เปิดกราฟเรียลไทม์
     
     # === LOGGING SETTINGS ===
-    log_level: str = "INFO"                  # ระดับการ log
-    log_to_file: bool = True                 # บันทึก log ลงไฟล์
-    log_file_max_size: int = 50              # MB
-    log_backup_count: int = 5                # จำนวนไฟล์ backup
+    log_level: str = "INFO"                    # DEBUG, INFO, WARNING, ERROR
+    log_to_file: bool = True                   # เซฟ log ลงไฟล์
+    log_max_files: int = 10                    # จำนวนไฟล์ log สูงสุด
     
-    # === ANALYTICS SETTINGS ===
-    performance_tracking: bool = True        # เปิดการติดตามผลการดำเนินงาน
-    trade_history_days: int = 30             # เก็บประวัติเทรด 30 วัน
+    # === SAFETY SETTINGS ===
+    max_drawdown_percent: float = 20.0         # Drawdown สูงสุด 20%
+    max_daily_trades: int = 200                # จำนวน trades สูงสุดต่อวัน
+    emergency_stop_enabled: bool = True        # ระบบหยุดฉุกเฉิน
     
     def __post_init__(self):
-        """
-        ตรวจสอบและปรับแต่งการตั้งค่าหลังจากสร้าง object
-        """
+        """ตรวจสอบการตั้งค่าหลังจากสร้าง instance"""
+        self._validate_settings()
+    
+    def _validate_settings(self):
+        """ตรวจสอบความถูกต้องของการตั้งค่า"""
+        
         # ตรวจสอบ Trading Mode ต้องเป็น LIVE เท่านั้น
         if self.trading_mode != TradingMode.LIVE:
-            raise ValueError("❌ ระบบรองรับเฉพาะ LIVE TRADING เท่านั้น!")
-            
+            raise ValueError("❌ ระบบรองรับเฉพาะ LIVE Trading เท่านั้น!")
+        
         # ตรวจสอบ Symbol ต้องเป็น XAUUSD เท่านั้น
-        if self.symbol != "XAUUSD":
+        if self.symbol != "XAUUSD.v":
             raise ValueError("❌ ระบบรองรับเฉพาะ XAUUSD (Gold) เท่านั้น!")
             
         # ตรวจสอบ Stop Loss ต้องปิดเสมอ
@@ -118,7 +114,7 @@ class SystemSettings:
         # ตรวจสอบ Recovery ต้องเปิดเสมอ
         if not self.recovery_mandatory:
             raise ValueError("❌ Recovery System เป็นสิ่งจำเป็น!")
-    
+        
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> 'SystemSettings':
         """
@@ -141,8 +137,25 @@ class SystemSettings:
         ตรวจสอบการตั้งค่า MT5
         เชื่อมต่อไป: mt5_integration/mt5_connector.py
         """
+        # หากใช้การเชื่อมต่อที่มีอยู่แล้ว ไม่ต้องตรวจสอบ credentials
+        if self.use_existing_connection:
+            return True
+            
         required_fields = [self.mt5_server, self.mt5_login, self.mt5_password]
-        return all(field is not None for field in required_fields)
+        missing_fields = []
+        
+        if not self.mt5_login:
+            missing_fields.append("mt5_login")
+        if not self.mt5_password:
+            missing_fields.append("mt5_password")  
+        if not self.mt5_server:
+            missing_fields.append("mt5_server")
+            
+        if missing_fields:
+            print(f"❌ ข้อมูล MT5 ที่ขาดหายไป: {', '.join(missing_fields)}")
+            return False
+            
+        return True
     
     def get_session_settings(self, session: MarketSession) -> Dict:
         """
@@ -159,6 +172,33 @@ class SystemSettings:
         """
         # TODO: Implement trading parameters loading
         return {}
+    
+    def get_mt5_info_string(self) -> str:
+        """สร้าง string แสดงข้อมูล MT5"""
+        if self.use_existing_connection:
+            return "MT5: ใช้การเชื่อมต่อที่มีอยู่แล้ว"
+        elif self.validate_mt5_settings():
+            return f"Login: {self.mt5_login} | Server: {self.mt5_server}"
+        else:
+            return "MT5 Settings: ❌ Not Configured"
+    
+    def set_mt5_credentials(self, login: int, password: str, server: str, path: Optional[str] = None):
+        """
+        ตั้งค่าข้อมูล MT5 ใหม่
+        
+        Args:
+            login: หมายเลขบัญชี MT5
+            password: รหัสผ่าน MT5  
+            server: ชื่อ Server MT5
+            path: path ไปยัง terminal64.exe (optional)
+        """
+        self.mt5_login = login
+        self.mt5_password = password
+        self.mt5_server = server
+        self.mt5_path = path
+        self.use_existing_connection = False  # เปลี่ยนเป็น manual login
+        
+        print(f"✅ อัพเดทข้อมูล MT5: {self.get_mt5_info_string()}")
 
 # === GLOBAL SETTINGS INSTANCE ===
 # สร้าง instance เดียวให้ใช้ทั้งระบบ
@@ -180,3 +220,83 @@ def update_system_settings(new_settings: SystemSettings) -> None:
     """
     global _global_settings
     _global_settings = new_settings
+
+def setup_mt5_connection(login: int, password: str, server: str, path: Optional[str] = None) -> SystemSettings:
+    """
+    ตั้งค่าการเชื่อมต่อ MT5 แบบง่าย
+    
+    Args:
+        login: หมายเลขบัญชี MT5
+        password: รหัสผ่าน MT5
+        server: ชื่อ Server MT5  
+        path: path ไปยัง terminal64.exe (optional)
+        
+    Returns:
+        SystemSettings instance ที่ตั้งค่าแล้ว
+        
+    Example:
+        >>> settings = setup_mt5_connection(
+        ...     login=51050633,
+        ...     password="YourPassword123", 
+        ...     server="MetaQuotes-Demo"
+        ... )
+    """
+    settings = get_system_settings()
+    settings.set_mt5_credentials(login, password, server, path)
+    return settings
+
+# === MT5 CONFIGURATION HELPER ===
+def get_common_mt5_servers() -> List[str]:
+    """รายชื่อ MT5 Server ที่ใช้กันทั่วไป"""
+    return [
+        # Demo Servers
+        "MetaQuotes-Demo",
+        "MetaQuotes-Server", 
+        
+        # Popular Brokers
+        "ICMarkets-Live-01", "ICMarkets-Live-02", "ICMarkets-Live-16",
+        "FTMO-Server", "FTMO-Server2", "FTMO-Demo",
+        "XM-Server", "XM-Real", "XM-Demo", 
+        "Exness-MT5Real", "Exness-MT5Real2", "Exness-Demo",
+        "Admiral-Real", "Admiral-Demo",
+        "FXCM-USDReal", "FXCM-Demo",
+        "Pepperstone-Live", "Pepperstone-Demo",
+        "Oanda-v20Live", "Oanda-Demo",
+        
+        # Thai Brokers
+        "FSMSmart-Server", "FSMSmart-Demo",
+        "KTZMaximusLive", "KTZMaximus-Demo"
+    ]
+
+def print_mt5_setup_instructions():
+   """แสดงคำแนะนำการตั้งค่า MT5"""
+   print("""
+🔧 MT5 AUTO-DETECT CONNECTION SETUP
+===================================
+
+✅ วิธีใช้งาน (แนะนำ):
+1. เปิด MetaTrader 5
+2. Login เข้าบัญชีของคุณให้เรียบร้อย
+3. เปิด AutoTrading (กดปุ่ม Algo Trading)
+4. รันโปรแกรม - ระบบจะ Auto-detect การเชื่อมต่อ
+
+🔧 หากต้องการ Manual Setup:
+ใช้ฟังก์ชัน setup_mt5_connection():
+
+from config.settings import setup_mt5_connection
+settings = setup_mt5_connection(
+   login=your_account_number,
+   password="your_password", 
+   server="your_server_name"
+)
+
+📋 ตรวจสอบการตั้งค่า:
+- MT5 เปิดอยู่และเชื่อมต่อ Server แล้ว
+- AutoTrading เปิดอยู่ (สีเขียว)
+- Symbol XAUUSD พร้อมใช้งาน
+- ไม่มี Error ใน Expert/Journal tab
+   """)
+
+# Auto-print setup instructions when imported
+if __name__ == "__main__":
+   print_mt5_setup_instructions()

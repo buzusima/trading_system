@@ -1,27 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SIGNAL GENERATOR - Entry Signal Coordination Engine
-================================================
+SIGNAL GENERATOR - Entry Signal Coordination Engine (FIXED)
+=========================================================
 รวบรวมและประสานงาน Entry Signals จากทุก Entry Engines
-ทำหน้าที่เป็นหัวใจหลักในการตัดสินใจเข้าออร์เดอร์
+แก้ไขให้ทำงานแบบ SYNC และเชื่อมต่อกับระบบอื่นได้
 
 Key Features:
 - รวบรวม signals จาก entry engines ทั้งหมด
 - ประเมินคุณภาพ signal และความน่าเชื่อถือ
 - จัดลำดับความสำคัญของ signals
 - ตัดสินใจ final entry signal
-- ปรับความถี่การเข้าออร์เดอร์ตาม market conditions
 - รองรับ High-Frequency Trading (50-100 lots/วัน)
-
-เชื่อมต่อไปยัง:
-- adaptive_entries/entry_engines/* (รับ signals)
-- market_intelligence/market_analyzer.py (วิเคราะห์ตลาด)
-- adaptive_entries/strategy_selector.py (เลือกกลยุทธ์)
-- mt5_integration/order_executor.py (ส่งออร์เดอร์)
 """
 
-import asyncio
 import threading
 import time
 from datetime import datetime, timedelta
@@ -34,7 +26,7 @@ import json
 # เชื่อมต่อ internal modules
 from config.settings import get_system_settings, MarketSession
 from config.trading_params import get_trading_parameters, EntryStrategy
-from utilities.professional_logger import setup_trading_logger
+from utilities.professional_logger import setup_component_logger
 from utilities.error_handler import handle_trading_errors, ErrorCategory, ErrorSeverity
 
 class SignalStrength(Enum):
@@ -60,45 +52,31 @@ class SignalConfidence(Enum):
 
 @dataclass
 class EntrySignal:
-    """
-    คลาสสำหรับเก็บข้อมูล Entry Signal
-    """
-    signal_id: str                              # ID เฉพาะของ Signal
-    timestamp: datetime                         # เวลาที่สร้าง Signal
-    source_engine: EntryStrategy               # Engine ที่สร้าง Signal
-    direction: SignalDirection                 # ทิศทางการเทรด
-    strength: SignalStrength                   # ความแรงของ Signal
-    confidence: float                          # ความเชื่อมั่น (0.0-1.0)
-    
-    # Market Data
-    current_price: float                       # ราคาปัจจุบัน
-    suggested_volume: float                    # Volume ที่แนะนำ
-    
-    # Technical Analysis Data
+    """คลาสสำหรับเก็บข้อมูล Entry Signal"""
+    signal_id: str
+    timestamp: datetime
+    source_engine: EntryStrategy
+    direction: SignalDirection
+    strength: SignalStrength
+    confidence: float
+    current_price: float
+    suggested_volume: float
     technical_indicators: Dict[str, Any] = field(default_factory=dict)
     market_conditions: Dict[str, Any] = field(default_factory=dict)
-    
-    # Signal Quality Metrics
-    signal_quality_score: float = 0.0         # คะแนนคุณภาพ Signal (0-100)
-    risk_reward_ratio: float = 1.0             # อัตราส่วน Risk:Reward
-    probability_success: float = 0.5           # ความน่าจะเป็นที่จะสำเร็จ
-    
-    # Execution Parameters
-    urgency_level: int = 1                     # ระดับความรีบด่วน (1-5)
-    max_slippage_points: float = 2.0           # Slippage สูงสุดที่ยอมรับได้
-    
-    # Metadata
-    session: MarketSession                     # Session ที่เกิด Signal
-    market_volatility: str = "MEDIUM"          # ความผันผวนของตลาด
+    signal_quality_score: float = 0.0
+    risk_reward_ratio: float = 1.0
+    probability_success: float = 0.5
+    urgency_level: int = 1
+    max_slippage_points: float = 2.0
+    session: MarketSession = MarketSession.ASIAN
+    market_volatility: str = "MEDIUM"
     additional_info: Dict[str, Any] = field(default_factory=dict)
 
 class SignalAggregator:
-    """
-    รวบรวมและประมวลผล Signals จาก Entry Engines ต่างๆ
-    """
+    """รวบรวมและประมวลผล Signals จาก Entry Engines ต่างๆ"""
     
     def __init__(self):
-        self.logger = setup_trading_logger()
+        self.logger = setup_component_logger("SignalAggregator")
         self.settings = get_system_settings()
         self.trading_params = get_trading_parameters()
         
@@ -122,35 +100,29 @@ class SignalAggregator:
         self.min_confidence_level = 0.6
         self.min_quality_score = 60.0
         
-        # Threading
-        self.processing_active = False
-        self.signal_processor_thread = None
-        
         self.logger.info("📊 เริ่มต้น Signal Aggregator")
     
     def register_entry_engine(self, strategy: EntryStrategy, engine_instance: Any) -> None:
-        """
-        ลงทะเบียน Entry Engine
-        """
+        """ลงทะเบียน Entry Engine"""
         self.entry_engines[strategy] = engine_instance
         self.logger.info(f"✅ ลงทะเบียน {strategy.value} Engine")
     
     def add_signal(self, signal: EntrySignal) -> bool:
-        """
-        เพิ่ม Signal เข้าสู่ระบบ
-        """
+        """เพิ่ม Signal เข้าระบบ"""
         try:
             # ตรวจสอบคุณภาพ Signal
-            if not self._validate_signal_quality(signal):
-                self.logger.debug(f"🚫 Signal คุณภาพต่ำ: {signal.signal_id}")
+            if not self._validate_signal(signal):
+                self.logger.debug(f"📊 Signal ไม่ผ่านการตรวจสอบ: {signal.signal_id}")
                 return False
-            
-            # คำนวณ Signal Quality Score
-            signal.signal_quality_score = self._calculate_quality_score(signal)
             
             # เพิ่มเข้า Queue
             self.signal_queue.put(signal)
-            self.logger.debug(f"📈 เพิ่ม Signal: {signal.signal_id} | Score: {signal.signal_quality_score:.1f}")
+            self.active_signals.append(signal)
+            
+            self.logger.info(f"📨 เพิ่ม Signal: {signal.signal_id} | "
+                           f"Direction: {signal.direction.value} | "
+                           f"Strength: {signal.strength.value} | "
+                           f"Confidence: {signal.confidence:.2f}")
             
             return True
             
@@ -158,11 +130,9 @@ class SignalAggregator:
             self.logger.error(f"❌ ข้อผิดพลาดในการเพิ่ม Signal: {e}")
             return False
     
-    def _validate_signal_quality(self, signal: EntrySignal) -> bool:
-        """
-        ตรวจสอบคุณภาพ Signal ขั้นพื้นฐาน
-        """
-        # ตรวจสอบความแรง
+    def _validate_signal(self, signal: EntrySignal) -> bool:
+        """ตรวจสอบคุณภาพ Signal"""
+        # ตรวจสอบความแรงของ Signal
         if signal.strength.value < self.min_signal_strength.value:
             return False
         
@@ -170,49 +140,41 @@ class SignalAggregator:
         if signal.confidence < self.min_confidence_level:
             return False
         
-        # ตรวจสอบอายุของ Signal (ต้องไม่เก่าเกิน 60 วินาที)
-        signal_age = (datetime.now() - signal.timestamp).total_seconds()
-        if signal_age > 60:
+        # ตรวจสอบคะแนนคุณภาพ
+        if signal.signal_quality_score < self.min_quality_score:
             return False
         
         return True
     
-    def _calculate_quality_score(self, signal: EntrySignal) -> float:
-        """
-        คำนวณคะแนนคุณภาพของ Signal
-        """
-        score = 0.0
+    def get_next_signal(self) -> Optional[EntrySignal]:
+        """ดึง Signal ถัดไป"""
+        try:
+            return self.signal_queue.get_nowait()
+        except queue.Empty:
+            return None
+    
+    def clear_old_signals(self, max_age_minutes: int = 5):
+        """ลบ Signals ที่เก่าเกินไป"""
+        current_time = datetime.now()
+        cutoff_time = current_time - timedelta(minutes=max_age_minutes)
         
-        # Base Score จากความแรง (0-30 คะแนน)
-        score += signal.strength.value * 6
+        # กรอง Active Signals
+        self.active_signals = [
+            signal for signal in self.active_signals 
+            if signal.timestamp > cutoff_time
+        ]
         
-        # Confidence Score (0-25 คะแนน)
-        score += signal.confidence * 25
-        
-        # Engine Weight Score (0-20 คะแนน)
-        engine_weight = self.engine_weights.get(signal.source_engine, 0.1)
-        score += engine_weight * 20
-        
-        # Market Conditions Score (0-15 คะแนน)
-        volatility_score = {"LOW": 5, "MEDIUM": 10, "HIGH": 15}.get(signal.market_volatility, 8)
-        score += volatility_score
-        
-        # Risk-Reward Ratio Score (0-10 คะแนน)
-        rr_score = min(signal.risk_reward_ratio * 3, 10)
-        score += rr_score
-        
-        return min(score, 100.0)  # ไม่เกิน 100 คะแนน
+        self.logger.debug(f"🧹 ลบ Signals เก่า | เหลือ: {len(self.active_signals)} signals")
 
 class SignalGenerator:
     """
-    🎯 Main Signal Generator Class
+    🎯 Main Signal Generator Class (แก้ไขแล้ว)
     
-    ทำหน้าที่ประสานงานการสร้าง Entry Signals
-    รองรับ High-Frequency Trading และ Adaptive Strategy Selection
+    ประสานงานการสร้าง Entry Signals และจัดการ High-Frequency Trading
     """
     
     def __init__(self):
-        self.logger = setup_trading_logger()
+        self.logger = setup_component_logger("SignalGenerator")
         self.settings = get_system_settings()
         self.trading_params = get_trading_parameters()
         
@@ -235,26 +197,18 @@ class SignalGenerator:
         self.generator_thread = None
         self.signal_monitor_thread = None
         
+        self.logger.info("🎯 เริ่มต้น Signal Generator")
+    
     def _calculate_target_signals(self) -> int:
-        """
-        คำนวณเป้าหมาย Signals ต่อชั่วโมง
-        เพื่อให้ได้ Volume 50-100 lots/วัน
-        """
-        # คำนวณจาก daily volume target
+        """คำนวณเป้าหมาย Signals ต่อชั่วโมง"""
         daily_target = (self.settings.daily_volume_target_min + 
                        self.settings.daily_volume_target_max) / 2
-        
-        # 24 ชั่วโมงการเทรด
         hourly_target = daily_target / 24
-        
-        # เผื่อสำหรับ signals ที่ไม่ได้ execute
-        return int(hourly_target * 1.5)
+        return int(hourly_target * 1.5)  # เผื่อสำหรับ signals ที่ไม่ได้ execute
     
     @handle_trading_errors(ErrorCategory.SIGNAL_GENERATION, ErrorSeverity.MEDIUM)
-    async def start_signal_generation(self) -> None:
-        """
-        เริ่มต้นการสร้าง Signals
-        """
+    def start_signal_generation(self) -> None:
+        """เริ่มต้นการสร้าง Signals (แก้ไขเป็น SYNC)"""
         if self.generator_active:
             self.logger.warning("⚠️ Signal Generator กำลังทำงานอยู่แล้ว")
             return
@@ -265,261 +219,350 @@ class SignalGenerator:
         try:
             from market_intelligence.market_analyzer import MarketAnalyzer
             self.market_analyzer = MarketAnalyzer()
-            await self.market_analyzer.start_analysis()
-        except ImportError:
-            self.logger.error("❌ ไม่สามารถเชื่อมต่อ Market Analyzer")
-            return
+            # ไม่ต้อง start_analysis() เพราะจะ start ใน main_window แล้ว
+            self.logger.info("✅ เชื่อมต่อ Market Analyzer สำเร็จ")
+        except ImportError as e:
+            self.logger.error(f"❌ ไม่สามารถเชื่อมต่อ Market Analyzer: {e}")
+            # ทำงานต่อได้แม้ไม่มี Market Analyzer
         
-        # เชื่อมต่อ Strategy Selector
+        # เชื่อมต่อ Strategy Selector (Optional)
         try:
             from adaptive_entries.strategy_selector import StrategySelector
             self.strategy_selector = StrategySelector()
-        except ImportError:
-            self.logger.error("❌ ไม่สามารถเชื่อมต่อ Strategy Selector")
-            return
+            self.logger.info("✅ เชื่อมต่อ Strategy Selector สำเร็จ")
+        except ImportError as e:
+            self.logger.warning(f"⚠️ ไม่สามารถเชื่อมต่อ Strategy Selector: {e}")
+            # ทำงานต่อได้แม้ไม่มี Strategy Selector
         
-        # เริ่มต้น Entry Engines
-        await self._initialize_entry_engines()
-        
-        # เริ่ม Threads
+        # เริ่ม Signal Generation Threads
         self.generator_active = True
-        self.generator_thread = threading.Thread(target=self._signal_generation_loop, daemon=True)
-        self.signal_monitor_thread = threading.Thread(target=self._signal_monitoring_loop, daemon=True)
+        
+        self.generator_thread = threading.Thread(
+            target=self._signal_generation_loop,
+            daemon=True,
+            name="SignalGenerationLoop"
+        )
+        
+        self.signal_monitor_thread = threading.Thread(
+            target=self._signal_monitor_loop,
+            daemon=True,
+            name="SignalMonitorLoop"
+        )
         
         self.generator_thread.start()
         self.signal_monitor_thread.start()
         
         self.logger.info("✅ Signal Generation System เริ่มทำงานแล้ว")
     
-    async def _initialize_entry_engines(self) -> None:
-        """
-        เริ่มต้น Entry Engines ทั้งหมด
-        """
-        try:
-            # Trend Following Engine
-            from adaptive_entries.entry_engines.trend_following import TrendFollowingEngine
-            trend_engine = TrendFollowingEngine()
-            self.signal_aggregator.register_entry_engine(EntryStrategy.TREND_FOLLOWING, trend_engine)
-            
-            # Mean Reversion Engine  
-            from adaptive_entries.entry_engines.mean_reversion import MeanReversionEngine
-            mean_engine = MeanReversionEngine()
-            self.signal_aggregator.register_entry_engine(EntryStrategy.MEAN_REVERSION, mean_engine)
-            
-            # อื่นๆ จะเพิ่มเมื่อสร้างไฟล์
-            self.logger.info("✅ เริ่มต้น Entry Engines สำเร็จ")
-            
-        except ImportError as e:
-            self.logger.error(f"❌ ไม่สามารถโหลด Entry Engines: {e}")
+    def stop_signal_generation(self) -> None:
+        """หยุดการสร้าง Signals"""
+        self.generator_active = False
+        
+        if self.generator_thread and self.generator_thread.is_alive():
+            self.generator_thread.join(timeout=5.0)
+        
+        if self.signal_monitor_thread and self.signal_monitor_thread.is_alive():
+            self.signal_monitor_thread.join(timeout=5.0)
+        
+        self.logger.info("🛑 หยุด Signal Generation System")
     
     def _signal_generation_loop(self) -> None:
-        """
-        Main Signal Generation Loop
-        รันใน separate thread
-        """
+        """Main Signal Generation Loop"""
         self.logger.info("🔄 เริ่มต้น Signal Generation Loop")
         
         while self.generator_active:
             try:
-                # ตรวจสอบเวลาระหว่าง Signals
-                time_since_last = datetime.now() - self.last_signal_time
+                # ตรวจสอบเวลาระหว่างการสร้าง Signal
+                current_time = datetime.now()
+                time_since_last = current_time - self.last_signal_time
+                
                 if time_since_last < self.min_signal_interval:
-                    time.sleep(0.1)
+                    time.sleep(1)
                     continue
                 
-                # สร้าง Signals จาก Entry Engines
-                self._generate_signals_from_engines()
+                # สร้าง Signal ใหม่
+                signal = self._generate_entry_signal()
+                if signal:
+                    # เพิ่มเข้าระบบ
+                    if self.signal_aggregator.add_signal(signal):
+                        self.signals_generated_today += 1
+                        self.last_signal_time = current_time
+                        
+                        self.logger.info(f"🎯 สร้าง Signal สำเร็จ: {signal.signal_id}")
                 
-                # พัก 100ms ก่อน loop ถัดไป
-                time.sleep(0.1)
+                # รอก่อนสร้าง Signal ถัดไป
+                time.sleep(5)  # รอ 5 วินาที
                 
             except Exception as e:
                 self.logger.error(f"❌ ข้อผิดพลาดใน Signal Generation Loop: {e}")
-                time.sleep(1)
+                time.sleep(10)
     
-    def _generate_signals_from_engines(self) -> None:
-        """
-        สร้าง Signals จาก Entry Engines ทั้งหมด
-        """
-        if not self.market_analyzer or not self.strategy_selector:
-            return
-        
-        # ได้ Market Conditions ปัจจุบัน
-        market_state = self.market_analyzer.get_current_market_state()
-        current_session = self.market_analyzer.get_current_session()
-        
-        # เลือก Active Strategies ตาม Market Conditions
-        active_strategies = self.strategy_selector.select_strategies(market_state, current_session)
-        
-        # สร้าง Signals จาก Active Engines
-        for strategy in active_strategies:
-            if strategy in self.signal_aggregator.entry_engines:
-                engine = self.signal_aggregator.entry_engines[strategy]
-                try:
-                    # เรียก generate_signal จาก engine
-                    if hasattr(engine, 'generate_signal'):
-                        signal = engine.generate_signal(market_state, current_session)
-                        if signal:
-                            self.signal_aggregator.add_signal(signal)
-                            self.signals_generated_today += 1
-                            self.last_signal_time = datetime.now()
-                            
-                except Exception as e:
-                    self.logger.error(f"❌ ข้อผิดพลาดใน {strategy.value} Engine: {e}")
-    
-    def _signal_monitoring_loop(self) -> None:
-        """
-        ตรวจสอบและประมวลผล Signals ที่เข้ามา
-        """
-        self.logger.info("👁️ เริ่มต้น Signal Monitoring Loop")
-        
+    def _signal_monitor_loop(self) -> None:
+        """Monitor Signal Quality และ Cleanup"""
         while self.generator_active:
             try:
-                # ดึง Signal จาก Queue (timeout 1 วินาที)
-                if not self.signal_aggregator.signal_queue.empty():
-                    signal = self.signal_aggregator.signal_queue.get(timeout=1)
-                    
-                    # ประมวลผล Signal
-                    self._process_final_signal(signal)
-                else:
-                    time.sleep(0.1)
-                    
-            except queue.Empty:
-                continue
+                # ลบ Signals เก่า
+                self.signal_aggregator.clear_old_signals()
+                
+                # Log สถิติ
+                active_count = len(self.signal_aggregator.active_signals)
+                if active_count > 0:
+                    self.logger.debug(f"📊 Active Signals: {active_count} | "
+                                    f"Generated Today: {self.signals_generated_today}")
+                
+                time.sleep(30)  # ตรวจสอบทุก 30 วินาที
+                
             except Exception as e:
-                self.logger.error(f"❌ ข้อผิดพลาดใน Signal Monitoring: {e}")
-                time.sleep(1)
+                self.logger.error(f"❌ ข้อผิดพลาดใน Signal Monitor Loop: {e}")
+                time.sleep(60)
     
-    def _process_final_signal(self, signal: EntrySignal) -> None:
-        """
-        ประมวลผล Final Signal และตัดสินใจส่งออร์เดอร์
-        """
+    def _generate_entry_signal(self) -> Optional[EntrySignal]:
+        """สร้าง Entry Signal ใหม่"""
         try:
-            # ตรวจสอบ Final Signal Quality
-            if signal.signal_quality_score < self.signal_aggregator.min_quality_score:
-                self.logger.debug(f"🚫 Final Signal คุณภาพต่ำ: {signal.signal_id}")
-                return
+            # ดึงข้อมูลตลาดปัจจุบัน
+            market_data = self._get_current_market_data()
+            if not market_data:
+                return None
             
-            # บันทึก Signal
-            self.signal_aggregator.active_signals.append(signal)
-            self.signal_aggregator.signal_history.append(signal)
+            # วิเคราะห์สภาพตลาด
+            market_condition = self._analyze_market_condition(market_data)
             
-            # เตรียมส่งออร์เดอร์
-            self._prepare_order_execution(signal)
+            # เลือกกลยุทธ์
+            selected_strategy = self._select_entry_strategy(market_condition)
             
-            self.logger.info(f"✅ ประมวลผล Signal: {signal.signal_id} | "
-                           f"Direction: {signal.direction.value} | "
-                           f"Score: {signal.signal_quality_score:.1f}")
+            # สร้าง Signal
+            signal = EntrySignal(
+                signal_id=f"SIG_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{selected_strategy.value[:3]}",
+                timestamp=datetime.now(),
+                source_engine=selected_strategy,
+                direction=self._determine_signal_direction(market_data, market_condition),
+                strength=self._calculate_signal_strength(market_data, market_condition),
+                confidence=self._calculate_confidence(market_data, market_condition),
+                current_price=market_data.get('current_price', 0.0),
+                suggested_volume=self._calculate_suggested_volume(),
+                technical_indicators=market_data.get('technical_indicators', {}),
+                market_conditions=market_condition,
+                signal_quality_score=self._calculate_quality_score(market_data, market_condition),
+                risk_reward_ratio=2.0,  # Default 1:2
+                probability_success=0.65,  # Default 65%
+                urgency_level=2,
+                session=self._get_current_session()
+            )
+            
+            return signal
             
         except Exception as e:
-            self.logger.error(f"❌ ข้อผิดพลาดในการประมวลผล Final Signal: {e}")
+            self.logger.error(f"❌ ข้อผิดพลาดในการสร้าง Signal: {e}")
+            return None
     
-    def _prepare_order_execution(self, signal: EntrySignal) -> None:
-        """
-        เตรียมข้อมูลสำหรับส่งออร์เดอร์
-        """
+    def _get_current_market_data(self) -> Optional[Dict[str, Any]]:
+        """ดึงข้อมูลตลาดปัจจุบัน"""
         try:
-            # TODO: เชื่อมต่อไป mt5_integration/order_executor.py
-            self.logger.info(f"📤 เตรียมส่งออร์เดอร์: {signal.direction.value} "
-                           f"{signal.suggested_volume} lots")
+            # ดึงข้อมูลจาก MT5
+            import MetaTrader5 as mt5
             
-            # เพิ่มจำนวน signals ที่ execute
-            self.signals_executed_today += 1
+            # ดึงราคาปัจจุบัน
+            tick = mt5.symbol_info_tick("XAUUSD")
+            if not tick:
+                return None
+            
+            # ดึงข้อมูล OHLC
+            rates = mt5.copy_rates_from_pos("XAUUSD", mt5.TIMEFRAME_M5, 0, 100)
+            if rates is None or len(rates) == 0:
+                return None
+            
+            current_price = (tick.bid + tick.ask) / 2
+            
+            return {
+                'current_price': current_price,
+                'bid': tick.bid,
+                'ask': tick.ask,
+                'spread': (tick.ask - tick.bid) * 10000,
+                'rates': rates,
+                'technical_indicators': self._calculate_basic_indicators(rates)
+            }
             
         except Exception as e:
-            self.logger.error(f"❌ ข้อผิดพลาดในการเตรียมออร์เดอร์: {e}")
+            self.logger.error(f"❌ ไม่สามารถดึงข้อมูลตลาดได้: {e}")
+            return None
     
-    def stop_signal_generation(self) -> None:
-        """
-        หยุดการสร้าง Signals
-        """
-        self.logger.info("🛑 หยุด Signal Generation System")
-        
-        self.generator_active = False
-        
-        # รอให้ Threads จบ
-        if self.generator_thread and self.generator_thread.is_alive():
-            self.generator_thread.join(timeout=5)
-        
-        if self.signal_monitor_thread and self.signal_monitor_thread.is_alive():
-            self.signal_monitor_thread.join(timeout=5)
-        
-        self.logger.info("✅ Signal Generation System หยุดแล้ว")
+    def _calculate_basic_indicators(self, rates) -> Dict[str, float]:
+        """คำนวณ Technical Indicators พื้นฐาน"""
+        try:
+            import numpy as np
+            
+            closes = np.array([r['close'] for r in rates])
+            
+            # Simple Moving Averages
+            sma_20 = np.mean(closes[-20:]) if len(closes) >= 20 else closes[-1]
+            sma_50 = np.mean(closes[-50:]) if len(closes) >= 50 else closes[-1]
+            
+            # ATR approximation
+            highs = np.array([r['high'] for r in rates])
+            lows = np.array([r['low'] for r in rates])
+            atr = np.mean(highs[-14:] - lows[-14:]) if len(rates) >= 14 else 0.0
+            
+            return {
+                'sma_20': sma_20,
+                'sma_50': sma_50,
+                'atr': atr,
+                'current_close': closes[-1]
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ ไม่สามารถคำนวณ Indicators ได้: {e}")
+            return {}
     
-    def get_signal_statistics(self) -> Dict[str, Any]:
-        """
-        ดึงสถิติการทำงานของ Signal Generator
-        """
+    def _analyze_market_condition(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """วิเคราะห์สภาพตลาด"""
+        indicators = market_data.get('technical_indicators', {})
+        
+        # Trend Analysis
+        sma_20 = indicators.get('sma_20', 0)
+        sma_50 = indicators.get('sma_50', 0)
+        current_price = market_data.get('current_price', 0)
+        
+        if sma_20 > sma_50 and current_price > sma_20:
+            trend = "BULLISH"
+        elif sma_20 < sma_50 and current_price < sma_20:
+            trend = "BEARISH"
+        else:
+            trend = "SIDEWAYS"
+        
+        # Volatility Analysis
+        atr = indicators.get('atr', 0)
+        volatility = "HIGH" if atr > 2.0 else "MEDIUM" if atr > 1.0 else "LOW"
+        
         return {
-            "signals_generated_today": self.signals_generated_today,
-            "signals_executed_today": self.signals_executed_today,
-            "target_signals_per_hour": self.target_signals_per_hour,
-            "active_signals_count": len(self.signal_aggregator.active_signals),
-            "signal_history_count": len(self.signal_aggregator.signal_history),
-            "execution_rate": (self.signals_executed_today / max(self.signals_generated_today, 1)) * 100,
-            "generator_active": self.generator_active
+            'trend': trend,
+            'volatility': volatility,
+            'atr': atr,
+            'spread': market_data.get('spread', 0)
         }
     
-    def get_active_signals(self) -> List[EntrySignal]:
-        """
-        ดึงรายการ Active Signals
-        """
-        return self.signal_aggregator.active_signals.copy()
+    def _select_entry_strategy(self, market_condition: Dict[str, Any]) -> EntryStrategy:
+        """เลือกกลยุทธ์การเข้าออร์เดอร์"""
+        trend = market_condition.get('trend', 'SIDEWAYS')
+        volatility = market_condition.get('volatility', 'MEDIUM')
+        
+        if trend in ['BULLISH', 'BEARISH'] and volatility == 'HIGH':
+            return EntryStrategy.TREND_FOLLOWING
+        elif trend == 'SIDEWAYS':
+            return EntryStrategy.MEAN_REVERSION
+        elif volatility == 'HIGH':
+            return EntryStrategy.BREAKOUT_FALSE
+        else:
+            return EntryStrategy.SCALPING_ENGINE
     
-    def clear_old_signals(self, max_age_minutes: int = 30) -> int:
-        """
-        ลบ Signals เก่าออก
-        """
-        current_time = datetime.now()
-        cutoff_time = current_time - timedelta(minutes=max_age_minutes)
+    def _determine_signal_direction(self, market_data: Dict[str, Any], 
+                                  market_condition: Dict[str, Any]) -> SignalDirection:
+        """กำหนดทิศทางของ Signal"""
+        trend = market_condition.get('trend', 'SIDEWAYS')
+        current_price = market_data.get('current_price', 0)
+        indicators = market_data.get('technical_indicators', {})
+        sma_20 = indicators.get('sma_20', current_price)
         
-        # นับ signals เก่า
-        old_count = len([s for s in self.signal_aggregator.active_signals 
-                        if s.timestamp < cutoff_time])
+        if trend == 'BULLISH' and current_price > sma_20:
+            return SignalDirection.BUY
+        elif trend == 'BEARISH' and current_price < sma_20:
+            return SignalDirection.SELL
+        else:
+            # Random direction for sideways market
+            import random
+            return random.choice([SignalDirection.BUY, SignalDirection.SELL])
+    
+    def _calculate_signal_strength(self, market_data: Dict[str, Any], 
+                                 market_condition: Dict[str, Any]) -> SignalStrength:
+        """คำนวณความแรงของ Signal"""
+        volatility = market_condition.get('volatility', 'MEDIUM')
+        spread = market_condition.get('spread', 0)
         
-        # ลบ signals เก่า
-        self.signal_aggregator.active_signals = [
-            s for s in self.signal_aggregator.active_signals 
-            if s.timestamp >= cutoff_time
-        ]
+        if volatility == 'HIGH' and spread < 3.0:
+            return SignalStrength.STRONG
+        elif volatility == 'MEDIUM':
+            return SignalStrength.MODERATE
+        else:
+            return SignalStrength.WEAK
+    
+    def _calculate_confidence(self, market_data: Dict[str, Any], 
+                            market_condition: Dict[str, Any]) -> float:
+        """คำนวณความเชื่อมั่นของ Signal"""
+        base_confidence = 0.6
         
-        if old_count > 0:
-            self.logger.info(f"🧹 ลบ Signals เก่า {old_count} รายการ")
+        # ปรับตาม volatility
+        volatility = market_condition.get('volatility', 'MEDIUM')
+        if volatility == 'HIGH':
+            base_confidence += 0.1
+        elif volatility == 'LOW':
+            base_confidence -= 0.1
         
-        return old_count
+        # ปรับตาม spread
+        spread = market_condition.get('spread', 0)
+        if spread < 2.0:
+            base_confidence += 0.1
+        elif spread > 5.0:
+            base_confidence -= 0.1
+        
+        return max(0.3, min(0.95, base_confidence))
+    
+    def _calculate_suggested_volume(self) -> float:
+        """คำนวณ Volume ที่แนะนำ"""
+        # ใช้ volume พื้นฐาน 0.01 lots
+        return 0.01
+    
+    def _calculate_quality_score(self, market_data: Dict[str, Any], 
+                               market_condition: Dict[str, Any]) -> float:
+        """คำนวณคะแนนคุณภาพของ Signal"""
+        base_score = 60.0
+        
+        # ปรับตามสภาพตลาด
+        trend = market_condition.get('trend', 'SIDEWAYS')
+        volatility = market_condition.get('volatility', 'MEDIUM')
+        
+        if trend != 'SIDEWAYS':
+            base_score += 10.0
+        
+        if volatility == 'MEDIUM':
+            base_score += 10.0
+        elif volatility == 'HIGH':
+            base_score += 5.0
+        
+        return min(100.0, base_score)
+    
+    def _get_current_session(self) -> MarketSession:
+        """ดึง Market Session ปัจจุบัน"""
+        current_hour = datetime.now().hour
+        
+        if 15 <= current_hour < 24 or current_hour == 0:
+            return MarketSession.LONDON
+        elif 20 <= current_hour or current_hour < 6:
+            return MarketSession.NEW_YORK
+        elif 20 <= current_hour < 24:
+            return MarketSession.OVERLAP
+        else:
+            return MarketSession.ASIAN
+    
+    def get_signal_statistics(self) -> Dict[str, Any]:
+        """ดึงสถิติการทำงานของ Signal Generator"""
+        return {
+            'signals_generated_today': self.signals_generated_today,
+            'signals_executed_today': self.signals_executed_today,
+            'target_signals_per_hour': self.target_signals_per_hour,
+            'active_signals_count': len(self.signal_aggregator.active_signals),
+            'generator_active': self.generator_active,
+            'last_signal_time': self.last_signal_time.strftime("%H:%M:%S") if self.last_signal_time else "Never"
+        }
+    
+    def get_next_entry_signal(self) -> Optional[EntrySignal]:
+        """ดึง Entry Signal ถัดไป"""
+        return self.signal_aggregator.get_next_signal()
 
 # === GLOBAL SIGNAL GENERATOR INSTANCE ===
 _global_signal_generator: Optional[SignalGenerator] = None
 
 def get_signal_generator() -> SignalGenerator:
-    """
-    ดึง SignalGenerator แบบ Singleton
-    """
+    """ดึง Signal Generator แบบ Singleton"""
     global _global_signal_generator
     if _global_signal_generator is None:
         _global_signal_generator = SignalGenerator()
     return _global_signal_generator
-
-async def main():
-    """
-    ทดสอบการทำงานของ Signal Generator
-    """
-    print("🧪 ทดสอบ Signal Generator")
-    
-    generator = get_signal_generator()
-    
-    try:
-        await generator.start_signal_generation()
-        
-        # รัน 10 วินาที
-        await asyncio.sleep(10)
-        
-        # แสดงสถิติ
-        stats = generator.get_signal_statistics()
-        print(f"📊 สถิติ: {json.dumps(stats, indent=2, ensure_ascii=False)}")
-        
-    finally:
-        generator.stop_signal_generation()
-
-if __name__ == "__main__":
-    asyncio.run(main())
