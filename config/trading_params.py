@@ -1,462 +1,800 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TRADING PARAMETERS - พารามิเตอร์การเทรดดิ้ง
-======================================
-กำหนดพารามิเตอร์ทั้งหมดสำหรับการเทรด XAUUSD
-รวมถึงการตั้งค่าสำหรับ Recovery Strategies ต่างๆ
+TRADING PARAMETERS - พารามิเตอร์การเทรดหลัก (COMPLETE)
+===================================================
+กำหนดพารามิเตอร์การเทรดทั้งหมดสำหรับระบบ Intelligent Gold Trading System
+ฉบับสมบูรณ์แบบที่รองรับการจัดการพารามิเตอร์ขั้นสูง
 
-เชื่อมต่อไปยัง:
-- config/settings.py (การตั้งค่าระบบหลัก)
-- intelligent_recovery/strategies/* (กลยุทธ์ Recovery)
-- adaptive_entries/entry_engines/* (กลยุทธ์การเข้าออร์เดอร์)
-- money_management/* (การจัดการเงินทุน)
+🎯 ฟีเจอร์หลัก:
+- Multi-strategy parameter management
+- Session-based parameter optimization
+- Risk management parameters
+- Recovery method configurations
+- Performance-based parameter tuning
+- Real-time parameter adjustment
+- Parameter validation และ constraints
+- Historical parameter tracking
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Any, Tuple, Union
 from enum import Enum
+from datetime import datetime, timedelta
+import json
+import math
+from pathlib import Path
+from collections import defaultdict
 
-class RecoveryMethod(Enum):
-    """วิธีการ Recovery ต่างๆ"""
-    MARTINGALE_SMART = "MARTINGALE_SMART"           # Martingale อัจฉริยะ
-    GRID_INTELLIGENT = "GRID_INTELLIGENT"           # Grid แบบอัจฉริยะ  
-    HEDGING_ADVANCED = "HEDGING_ADVANCED"           # Hedging ขั้นสูง
-    AVERAGING_INTELLIGENT = "AVERAGING_INTELLIGENT" # เฉลี่ยราคาอัจฉริยะ
-    CORRELATION_RECOVERY = "CORRELATION_RECOVERY"   # Recovery ด้วย Correlation
+# ===============================
+# ENUMS และ CONSTANTS
+# ===============================
 
 class EntryStrategy(Enum):
     """กลยุทธ์การเข้าออร์เดอร์"""
-    TREND_FOLLOWING = "TREND_FOLLOWING"     # ตาม Trend
-    MEAN_REVERSION = "MEAN_REVERSION"       # กลับสู่ค่าเฉลี่ย
-    BREAKOUT_FALSE = "BREAKOUT_FALSE"       # False Breakout
-    NEWS_REACTION = "NEWS_REACTION"         # ปฏิกิริยาข่าว
-    SCALPING_ENGINE = "SCALPING_ENGINE"     # Scalping
+    TREND_FOLLOWING = "TREND_FOLLOWING"        # ตามเทรนด์
+    MEAN_REVERSION = "MEAN_REVERSION"          # กลับค่าเฉลี่ย
+    BREAKOUT_FALSE = "BREAKOUT_FALSE"          # หลอกเบรค
+    NEWS_REACTION = "NEWS_REACTION"            # ปฏิกิริยาข่าว
+    SCALPING_ENGINE = "SCALPING_ENGINE"        # สกัลปิ้ง
+    GRID_TRADING = "GRID_TRADING"              # เทรด Grid
+    ARBITRAGE = "ARBITRAGE"                    # Arbitrage
+
+class RecoveryMethod(Enum):
+    """วิธีการ Recovery (แก้ไม้)"""
+    MARTINGALE_SMART = "MARTINGALE_SMART"          # Martingale อัจฉริยะ
+    GRID_INTELLIGENT = "GRID_INTELLIGENT"          # Grid ยืดหยุ่น
+    HEDGING_ADVANCED = "HEDGING_ADVANCED"          # Hedging ขั้นสูง
+    AVERAGING_INTELLIGENT = "AVERAGING_INTELLIGENT" # เฉลี่ยราคาอัจฉริยะ
+    CORRELATION_RECOVERY = "CORRELATION_RECOVERY"   # Recovery แบบ correlation
+    DYNAMIC_HEDGING = "DYNAMIC_HEDGING"            # Hedging แบบไดนามิก
+    PYRAMID_RECOVERY = "PYRAMID_RECOVERY"          # Recovery แบบ Pyramid
+
+class PositionSizing(Enum):
+    """วิธีการคำนวณขนาดตำแหน่ง"""
+    FIXED = "FIXED"                    # ขนาดคงที่
+    PERCENTAGE = "PERCENTAGE"          # เปอร์เซ็นต์ของ balance
+    VOLATILITY_BASED = "VOLATILITY_BASED"  # ตาม volatility
+    KELLY_CRITERION = "KELLY_CRITERION"    # Kelly Criterion
+    ADAPTIVE = "ADAPTIVE"              # ปรับตามสถานการณ์
+    BALANCE_FRACTION = "BALANCE_FRACTION"  # เศษส่วนของ balance
+    EQUITY_CURVE = "EQUITY_CURVE"      # ตาม equity curve
+
+class RiskProfile(Enum):
+    """โปรไฟล์ความเสี่ยง"""
+    CONSERVATIVE = "CONSERVATIVE"      # อนุรักษ์นิยม
+    MODERATE = "MODERATE"             # ปานกลาง
+    AGGRESSIVE = "AGGRESSIVE"         # ก้าวร้าว
+    HIGH_FREQUENCY = "HIGH_FREQUENCY" # ความถี่สูง (สำหรับ rebate)
+    ULTRA_CONSERVATIVE = "ULTRA_CONSERVATIVE"  # อนุรักษ์นิยมมาก
+    EXTREME_AGGRESSIVE = "EXTREME_AGGRESSIVE"  # ก้าวร้าวมาก
+
+class MarketCondition(Enum):
+    """สภาวะตลาด"""
+    TRENDING_UP = "TRENDING_UP"
+    TRENDING_DOWN = "TRENDING_DOWN"
+    RANGING = "RANGING"
+    VOLATILE = "VOLATILE"
+    QUIET = "QUIET"
+    NEWS_IMPACT = "NEWS_IMPACT"
+    WEEKEND = "WEEKEND"
+
+# ===============================
+# PARAMETER CLASSES
+# ===============================
 
 @dataclass
-class MarketConditionParams:
-    """พารามิเตอร์สำหรับสภาพตลาดแต่ละแบบ"""
+class StrategyParameters:
+    """พารามิเตอร์สำหรับกลยุทธ์เฉพาะ"""
+    strategy: EntryStrategy
+    enabled: bool = True
+    weight: float = 1.0                    # น้ำหนักในการเลือกใช้
+    confidence_threshold: float = 0.5      # threshold ขั้นต่ำ
+    max_signals_per_hour: int = 10         # สัญญาณสูงสุดต่อชั่วโมง
+    cooldown_seconds: int = 30             # cooldown ระหว่างสัญญาณ
     
-    # Trend Detection Parameters
-    adx_period: int = 14
-    adx_trending_min: float = 25.0      # ADX > 25 = Trending
-    adx_ranging_max: float = 20.0       # ADX < 20 = Ranging
+    # Strategy-specific parameters
+    parameters: Dict[str, Any] = field(default_factory=dict)
     
-    # Moving Average Parameters
+    # Performance tracking
+    signals_generated: int = 0
+    signals_executed: int = 0
+    successful_trades: int = 0
+    total_profit: float = 0.0
+    last_used: Optional[datetime] = None
+    
+    def get_success_rate(self) -> float:
+        """คำนวณ success rate"""
+        if self.signals_executed == 0:
+            return 0.0
+        return (self.successful_trades / self.signals_executed) * 100
+    
+    def get_average_profit(self) -> float:
+        """คำนวณกำไรเฉลี่ย"""
+        if self.successful_trades == 0:
+            return 0.0
+        return self.total_profit / self.successful_trades
+    
+    def update_performance(self, profit: float, success: bool):
+        """อัพเดทผลงาน"""
+        self.signals_executed += 1
+        if success:
+            self.successful_trades += 1
+        self.total_profit += profit
+        self.last_used = datetime.now()
+
+@dataclass
+class RecoveryParameters:
+    """พารามิเตอร์ Recovery"""
+    method: RecoveryMethod
+    enabled: bool = True
+    max_levels: int = 10               # จำนวนระดับสูงสุด
+    multiplier: float = 1.5            # ตัวคูณ volume
+    step_pips: float = 10.0            # ระยะห่างระหว่างระดับ
+    
+    # Advanced parameters
+    dynamic_multiplier: bool = True     # ปรับ multiplier ตาม market
+    correlation_factor: float = 0.8    # ปัจจัย correlation
+    time_decay: float = 0.1            # การลดลงตามเวลา
+    volatility_adjustment: bool = True  # ปรับตาม volatility
+    
+    # Risk controls
+    max_recovery_amount: float = 1000.0  # จำนวนเงินสูงสุดใน recovery
+    recovery_timeout_hours: int = 24    # timeout สำหรับ recovery
+    
+    # Performance tracking
+    recovery_attempts: int = 0
+    successful_recoveries: int = 0
+    total_recovery_profit: float = 0.0
+    average_recovery_time: float = 0.0
+    
+    def get_recovery_success_rate(self) -> float:
+        """คำนวณ success rate ของ recovery"""
+        if self.recovery_attempts == 0:
+            return 0.0
+        return (self.successful_recoveries / self.recovery_attempts) * 100
+
+@dataclass
+class PositionSizingParameters:
+    """พารามิเตอร์การคำนวณขนาดตำแหน่ง"""
+    method: PositionSizing = PositionSizing.ADAPTIVE
+    base_volume: float = 0.01              # ขนาดพื้นฐาน
+    min_volume: float = 0.01               # ขนาดขั้นต่ำ
+    max_volume: float = 10.0               # ขนาดสูงสุด
+    volume_step: float = 0.01              # ขั้นการเพิ่ม
+    
+    # Risk-based sizing
+    risk_per_trade_percent: float = 1.0    # % ของ balance ต่อเทรด
+    max_risk_per_day_percent: float = 5.0  # % ของ balance ต่อวัน
+    
+    # Adaptive parameters
+    confidence_multiplier: float = 2.0     # คูณด้วย confidence
+    volatility_factor: float = 0.5         # ปัจจัย volatility
+    session_multiplier: Dict[str, float] = field(default_factory=lambda: {
+        "ASIAN": 0.8,
+        "LONDON": 1.2,
+        "NEW_YORK": 1.5,
+        "OVERLAP": 1.8
+    })
+    
+    # Kelly Criterion parameters
+    kelly_fraction: float = 0.25           # เศษส่วน Kelly
+    kelly_lookback: int = 100              # จำนวนเทรดที่ดูย้อนหลัง
+    
+    # Equity curve parameters
+    equity_smooth_period: int = 20         # period สำหรับ smooth equity
+    equity_threshold: float = 0.95         # threshold สำหรับลด size
+    
+    def calculate_position_size(self, account_balance: float, confidence: float, 
+                                volatility: float, session: str = "ASIAN") -> float:
+        """คำนวณขนาดตำแหน่ง"""
+        base_size = self.base_volume
+        
+        if self.method == PositionSizing.FIXED:
+            return base_size
+        
+        elif self.method == PositionSizing.PERCENTAGE:
+            size = account_balance * (self.risk_per_trade_percent / 100) / 1000  # Assume $1000 per lot
+            
+        elif self.method == PositionSizing.VOLATILITY_BASED:
+            volatility_adj = 1.0 / max(volatility, 0.5)
+            size = base_size * volatility_adj
+            
+        elif self.method == PositionSizing.ADAPTIVE:
+            # Combine multiple factors
+            confidence_adj = 0.5 + (confidence * self.confidence_multiplier)
+            volatility_adj = 1.0 / max(volatility * self.volatility_factor, 0.5)
+            session_adj = self.session_multiplier.get(session, 1.0)
+            
+            size = base_size * confidence_adj * volatility_adj * session_adj
+            
+        else:
+            size = base_size
+        
+        # Apply limits
+        return max(self.min_volume, min(size, self.max_volume))
+
+@dataclass
+class TechnicalParameters:
+    """พารามิเตอร์ Technical Analysis"""
+    
+    # Moving Averages
     ma_fast_period: int = 10
-    ma_slow_period: int = 50
-    ma_trend_confirmation: int = 5      # จำนวน candle ที่ต้องยืนยัน trend
+    ma_slow_period: int = 20
+    ma_signal_period: int = 5
+    ma_method: str = "SMA"                 # SMA, EMA, WMA
     
-    # Volatility Parameters
-    atr_period: int = 14
-    atr_high_multiplier: float = 1.5    # ATR * 1.5 = High Volatility
-    atr_low_multiplier: float = 0.8     # ATR * 0.8 = Low Volatility
+    # RSI Parameters
+    rsi_period: int = 14
+    rsi_overbought: float = 70.0
+    rsi_oversold: float = 30.0
+    rsi_signal_threshold: float = 5.0      # ระยะห่างจาก extreme levels
     
-    # Bollinger Bands Parameters
+    # Bollinger Bands
     bb_period: int = 20
     bb_deviation: float = 2.0
-    bb_squeeze_threshold: float = 0.1   # ค่าต่ำสุดของ bandwidth
+    bb_price_source: str = "CLOSE"         # CLOSE, OPEN, HIGH, LOW
+    
+    # ADX Parameters
+    adx_period: int = 14
+    adx_trending_threshold: float = 25.0
+    adx_ranging_threshold: float = 20.0
+    adx_strong_threshold: float = 40.0
+    
+    # ATR Parameters
+    atr_period: int = 14
+    atr_multiplier: float = 2.0
+    atr_smoothing: str = "RMA"             # SMA, EMA, RMA
+    
+    # MACD Parameters
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    macd_price_source: str = "CLOSE"
+    
+    # Stochastic Parameters
+    stoch_k_period: int = 14
+    stoch_d_period: int = 3
+    stoch_smooth: int = 3
+    stoch_overbought: float = 80.0
+    stoch_oversold: float = 20.0
+    
+    # Support/Resistance
+    sr_lookback: int = 100                 # จำนวน bars ที่ดูย้อนหลัง
+    sr_touch_tolerance: float = 0.1        # tolerance ในการแตะ level
+    sr_strength_threshold: int = 3         # จำนวนครั้งที่แตะขั้นต่ำ
+    
+    # Volume Analysis
+    volume_sma_period: int = 20
+    volume_spike_threshold: float = 2.0    # เท่าของ volume average
+    
+    # Pattern Recognition
+    pattern_recognition_enabled: bool = True
+    pattern_lookback: int = 50
+    pattern_tolerance: float = 0.05
 
 @dataclass
-class EntryParams:
-    """พารามิเตอร์สำหรับการเข้าออร์เดอร์"""
+class SessionParameters:
+    """พารามิเตอร์เฉพาะ Session"""
+    session_name: str
     
-    # === TREND FOLLOWING PARAMETERS ===
-    trend_following: Dict = field(default_factory=lambda: {
-        "rsi_period": 14,
-        "rsi_overbought": 70,
-        "rsi_oversold": 30,
-        "macd_fast": 12,
-        "macd_slow": 26,
-        "macd_signal": 9,
-        "min_trend_strength": 0.7,      # ความแรงของ trend ขั้นต่ำ
-        "entry_timeout_minutes": 5,     # หมดเวลารอสัญญาณ
-        "max_entries_per_trend": 3      # จำนวนออร์เดอร์สูงสุดต่อ trend
-    })
+    # Timing
+    start_hour: int = 0
+    start_minute: int = 0
+    end_hour: int = 23
+    end_minute: int = 59
     
-    # === MEAN REVERSION PARAMETERS ===
-    mean_reversion: Dict = field(default_factory=lambda: {
-        "bb_period": 20,
-        "bb_deviation": 2.0,
-        "rsi_extreme_high": 80,         # RSI สูงมาก
-        "rsi_extreme_low": 20,          # RSI ต่ำมาก
-        "stoch_period": 14,
-        "stoch_overbought": 80,
-        "stoch_oversold": 20,
-        "mean_distance_threshold": 0.5,  # ระยะห่างจากค่าเฉลี่ย (%)
-        "reversion_confirmation": 2      # จำนวน candle ยืนยัน
-    })
+    # Market characteristics
+    expected_volatility: str = "MEDIUM"     # LOW, MEDIUM, HIGH, EXTREME
+    typical_spread: float = 2.0
+    volume_profile: str = "NORMAL"         # LOW, NORMAL, HIGH
     
-    # === BREAKOUT FALSE PARAMETERS ===
-    breakout_false: Dict = field(default_factory=lambda: {
-        "support_resistance_period": 50,
-        "breakout_min_pips": 10,        # Breakout ขั้นต่ำ (pips)
-        "false_breakout_pips": 5,       # กลับเข้า range (pips)
-        "volume_confirmation": True,     # ใช้ volume ยืนยัน
-        "time_window_minutes": 15,      # หน้าต่างเวลาสำหรับ false breakout
-        "max_attempts_per_level": 2     # จำนวนครั้งสูงสุดต่อระดับ
-    })
+    # Strategy preferences
+    preferred_strategies: List[EntryStrategy] = field(default_factory=list)
+    avoided_strategies: List[EntryStrategy] = field(default_factory=list)
+    strategy_weights: Dict[EntryStrategy, float] = field(default_factory=dict)
     
-    # === NEWS REACTION PARAMETERS ===
-    news_reaction: Dict = field(default_factory=lambda: {
-        "impact_levels": ["HIGH", "MEDIUM"],  # ระดับผลกระทบข่าว
-        "reaction_window_minutes": 30,        # หน้าต่างเวลาหลังข่าว
-        "spike_min_pips": 15,                # ความเคลื่อนไหวขั้นต่ำ
-        "reversal_confirmation": 3,          # candle ยืนยันการกลับตัว
-        "avoid_currencies": ["JPY", "CHF"],  # หลีกเลี่ยงข่าวสกุลเงินนี้
-        "pre_news_stop_minutes": 5           # หยุดเทรดก่อนข่าว
-    })
+    # Risk adjustments
+    max_spread: float = 3.0
+    position_sizing_multiplier: float = 1.0
+    max_positions: int = 10
+    risk_multiplier: float = 1.0
     
-    # === SCALPING PARAMETERS ===
-    scalping: Dict = field(default_factory=lambda: {
-        "timeframe": "M1",              # Timeframe หลัก
-        "pip_target": 3,                # เป้าหมาย profit (pips)
-        "spread_max": 2.0,              # Spread สูงสุด
-        "momentum_period": 5,           # ระยะเวลาวัด momentum
-        "entry_precision": 0.1,         # ความแม่นยำในการ entry (pips)
-        "max_positions_concurrent": 10   # จำนวน position พร้อมกันสูงสุด
-    })
-
-@dataclass  
-class RecoveryParams:
-    """พารามิเตอร์สำหรับระบบ Recovery ต่างๆ"""
+    # Recovery settings
+    preferred_recovery_method: RecoveryMethod = RecoveryMethod.AVERAGING_INTELLIGENT
+    recovery_aggressiveness: float = 1.0
     
-    # === SMART MARTINGALE RECOVERY ===
-    martingale_smart: Dict = field(default_factory=lambda: {
-        "initial_multiplier": 2.0,      # ตัวคูณเริ่มต้น
-        "max_multiplier": 8.0,          # ตัวคูณสูงสุด
-        "adaptive_multiplier": True,     # ปรับตัวคูณตามสภาพตลาด
-        "volatility_adjustment": True,   # ปรับตาม volatility
-        "max_levels": 10,               # จำนวนระดับสูงสุด
-        "level_distance_pips": 50,      # ระยะห่างระหว่างระดับ (pips)
-        "profit_factor": 1.2,           # เป้าหมาย profit
-        "risk_reduction_factor": 0.8    # ลดความเสี่ยงเมื่อขาดทุนมาก
-    })
+    # Performance targets
+    target_signals_per_hour: int = 5
+    target_success_rate: float = 60.0
     
-    # === INTELLIGENT GRID RECOVERY ===
-    grid_intelligent: Dict = field(default_factory=lambda: {
-        "grid_spacing_pips": 30,        # ระยะห่าง Grid (pips)
-        "max_grid_levels": 15,          # จำนวนระดับ Grid สูงสุด
-        "dynamic_spacing": True,        # ปรับระยะห่างแบบ dynamic
-        "trend_bias_factor": 1.5,       # น้ำหนัก trend
-        "consolidation_detection": True, # ตรวจจับการ sideways
-        "partial_close_enabled": True,  # ปิดบางส่วน
-        "breakeven_threshold": 0.5,     # เกณฑ์ breakeven
-        "grid_recovery_target": 1.3     # เป้าหมาย recovery
-    })
-    
-    # === ADVANCED HEDGING RECOVERY ===
-    hedging_advanced: Dict = field(default_factory=lambda: {
-        "hedge_ratio": 1.0,             # อัตราส่วน hedge (1:1)
-        "partial_hedge_enabled": True,   # hedge บางส่วน
-        "correlation_threshold": 0.7,    # เกณฑ์ correlation
-        "hedge_timing_delay": 60,       # หน่วงเวลาก่อน hedge (วินาที)
-        "max_hedge_levels": 5,          # จำนวนระดับ hedge สูงสุด
-        "profit_taking_aggressive": True, # รับกำไรแบบ aggressive
-        "hedge_exit_strategy": "FIFO",  # กลยุทธ์ออกจาก hedge
-        "correlation_pairs": ["EURUSD", "GBPUSD", "USDJPY"]  # คู่สกุลเงิน correlation
-    })
-    
-    # === INTELLIGENT AVERAGING RECOVERY ===
-    averaging_intelligent: Dict = field(default_factory=lambda: {
-        "averaging_distance_pips": 25,     # ระยะห่างสำหรับเฉลี่ย (pips)
-        "max_averaging_positions": 12,     # จำนวน position สูงสุด
-        "size_progression": "FIBONACCI",   # ลำดับขนาด position
-        "trend_weight_factor": 0.7,        # น้ำหนัก trend ในการเฉลี่ย
-        "time_based_averaging": True,      # เฉลี่ยตามเวลา
-        "volatility_adjustment": True,     # ปรับตาม volatility
-        "profit_lock_percentage": 50,      # ล็อคกำไร (%)
-        "averaging_timeout_hours": 24      # หมดเวลาการเฉลี่ย
-    })
-    
-    # === CORRELATION RECOVERY ===
-    correlation_recovery: Dict = field(default_factory=lambda: {
-        "correlation_threshold": 0.8,      # เกณฑ์ correlation
-        "correlation_window": 100,         # จำนวน candle คำนวณ correlation
-        "hedge_instruments": ["EURUSD", "GBPUSD", "USDJPY", "USDCHF"],
-        "recovery_ratio": 0.8,             # อัตราส่วน recovery
-        "max_correlation_positions": 8,    # จำนวน position correlation สูงสุด
-        "correlation_update_minutes": 5,   # อัพเดท correlation (นาที)
-        "exit_correlation_threshold": 0.3, # เกณฑ์ออกจาก correlation
-        "profit_sharing_ratio": 0.6        # แบ่งกำไรระหว่าง instruments
-    })
-
-@dataclass
-class MoneyManagementParams:
-    """พารามิเตอร์การจัดการเงินทุน"""
-    
-    # === POSITION SIZING ===
-    base_lot_size: float = 0.01             # ขนาด lot พื้นฐาน
-    max_lot_size: float = 10.0              # ขนาด lot สูงสุด
-    lot_size_precision: int = 2             # ทศนิยม lot size
-    
-    # === CAPITAL ALLOCATION ===
-    max_capital_risk_percent: float = 95.0   # ใช้เงินทุนสูงสุด (%)
-    reserve_capital_percent: float = 5.0     # เงินสำรอง (%)
-    recovery_capital_ratio: float = 0.7      # สัดส่วนเงินทุนสำหรับ recovery
-    
-    # === DYNAMIC LOT SIZING ===
-    balance_based_sizing: bool = True        # ปรับขนาดตาม balance
-    volatility_based_sizing: bool = True     # ปรับขนาดตาม volatility
-    recovery_based_sizing: bool = True       # ปรับขนาดตามสถานะ recovery
-    
-    # เส้นโค้งการปรับขนาด lot
-    sizing_curve: Dict = field(default_factory=lambda: {
-        "balance_ranges": {             # ขนาด lot ตาม balance
-            1000: 0.01,
-            5000: 0.05,
-            10000: 0.10,
-            50000: 0.50,
-            100000: 1.00
-        },
-        "volatility_multipliers": {     # ตัวคูณตาม volatility
-            "LOW": 1.2,
-            "NORMAL": 1.0,
-            "HIGH": 0.8,
-            "EXTREME": 0.6
-        }
-    })
-    
-    # === EXPOSURE MANAGEMENT ===
-    max_total_exposure: float = 20.0        # exposure สูงสุด (lots)
-    max_single_direction: float = 15.0      # exposure ทิศทางเดียวสูงสุด
-    exposure_warning_level: float = 12.0    # ระดับแจ้งเตือน exposure
-    
-    # === MARGIN MANAGEMENT ===
-    margin_buffer_percent: float = 20.0     # buffer margin (%)
-    margin_warning_level: float = 30.0      # ระดับแจ้งเตือน margin
-    auto_reduce_on_margin: bool = True      # ลด position อัตโนมัติเมื่อ margin ต่ำ
-
-@dataclass
-class SessionParams:
-    """พารามิเตอร์สำหรับแต่ละ session การเทรด"""
-    
-    # === ASIAN SESSION (22:00-08:00 GMT+7) ===
-    asian_session: Dict = field(default_factory=lambda: {
-        "preferred_strategies": [EntryStrategy.MEAN_REVERSION, EntryStrategy.SCALPING_ENGINE],
-        "recovery_method": RecoveryMethod.AVERAGING_INTELLIGENT,
-        "max_positions_per_hour": 20,
-        "lot_size_multiplier": 0.8,         # ลดขนาด lot
-        "volatility_expectation": "LOW",
-        "spread_tolerance": 1.5,            # tolerane spread สูงกว่า
-        "news_impact_sensitivity": 0.6      # ความไวต่อข่าวต่ำกว่า
-    })
-    
-    # === LONDON SESSION (15:00-00:00 GMT+7) ===
-    london_session: Dict = field(default_factory=lambda: {
-        "preferred_strategies": [EntryStrategy.TREND_FOLLOWING, EntryStrategy.BREAKOUT_FALSE],
-        "recovery_method": RecoveryMethod.GRID_INTELLIGENT,
-        "max_positions_per_hour": 40,
-        "lot_size_multiplier": 1.2,         # เพิ่มขนาด lot
-        "volatility_expectation": "HIGH",
-        "spread_tolerance": 1.0,
-        "news_impact_sensitivity": 1.0
-    })
-    
-    # === NEW YORK SESSION (20:30-05:30 GMT+7) ===
-    newyork_session: Dict = field(default_factory=lambda: {
-        "preferred_strategies": [EntryStrategy.NEWS_REACTION, EntryStrategy.TREND_FOLLOWING],
-        "recovery_method": RecoveryMethod.HEDGING_ADVANCED,
-        "max_positions_per_hour": 50,       # สูงสุด
-        "lot_size_multiplier": 1.0,
-        "volatility_expectation": "HIGH",
-        "spread_tolerance": 0.8,            # tolerance spread ต่ำสุด
-        "news_impact_sensitivity": 1.5      # ความไวต่อข่าวสูงสุด
-    })
-    
-    # === OVERLAP SESSION (20:30-00:00 GMT+7) ===
-    overlap_session: Dict = field(default_factory=lambda: {
-        "preferred_strategies": [EntryStrategy.BREAKOUT_FALSE, EntryStrategy.SCALPING_ENGINE],
-        "recovery_method": RecoveryMethod.MARTINGALE_SMART,
-        "max_positions_per_hour": 60,       # สูงสุดในช่วง overlap
-        "lot_size_multiplier": 1.5,         # เพิ่มขนาด lot สูงสุด
-        "volatility_expectation": "EXTREME",
-        "spread_tolerance": 0.5,            # tolerance spread ต่ำสุด
-        "news_impact_sensitivity": 2.0      # ความไวต่อข่าวสูงสุด
-    })
-
-@dataclass
-class PerformanceParams:
-    """พารามิเตอร์การวัดประสิทธิภาพ"""
-    
-    # === VOLUME TARGETS ===
-    daily_volume_min: float = 50.0         # Volume ขั้นต่ำต่อวัน (lots)
-    daily_volume_target: float = 75.0      # Volume เป้าหมายต่อวัน (lots)
-    daily_volume_max: float = 100.0        # Volume สูงสุดต่อวัน (lots)
-    
-    hourly_volume_distribution: Dict = field(default_factory=lambda: {
-        "00-01": 1.0,   "01-02": 0.8,   "02-03": 0.6,   "03-04": 0.4,
-        "04-05": 0.6,   "05-06": 0.8,   "06-07": 1.2,   "07-08": 1.0,
-        "08-09": 0.8,   "09-10": 0.6,   "10-11": 0.8,   "11-12": 1.0,
-        "12-13": 1.2,   "13-14": 1.0,   "14-15": 1.5,   "15-16": 2.0,  # London เริ่ม
-        "16-17": 2.5,   "17-18": 2.2,   "18-19": 2.0,   "19-20": 1.8,
-        "20-21": 3.5,   "21-22": 4.0,   "22-23": 3.8,   "23-00": 3.2   # Overlap
-    })
-    
-    # === PROFIT TARGETS ===
-    daily_profit_target: float = 100.0     # เป้าหมายกำไรต่อวัน (USD)
-    weekly_profit_target: float = 500.0    # เป้าหมายกำไรต่อสัปดาห์ (USD)
-    monthly_profit_target: float = 2000.0  # เป้าหมายกำไรต่อเดือน (USD)
-    
-    # === RECOVERY SUCCESS METRICS ===
-    recovery_success_target: float = 98.0  # เป้าหมาย recovery success (%)
-    max_recovery_time_hours: float = 24.0  # เวลา recovery สูงสุด (ชั่วโมง)
-    recovery_efficiency_target: float = 1.2 # ประสิทธิภาพ recovery
-    
-    # === SYSTEM PERFORMANCE ===
-    order_execution_target_ms: int = 100   # เป้าหมายความเร็วส่งออร์เดอร์ (ms)
-    system_uptime_target: float = 99.9     # เป้าหมาย uptime (%)
-    error_rate_max: float = 0.1            # อัตราข้อผิดพลาดสูงสุด (%)
+    # News handling
+    news_sensitivity: float = 1.0          # ความไวต่อข่าว
+    pre_news_stop_minutes: int = 5         # หยุดก่อนข่าวกี่นาที
+    post_news_wait_minutes: int = 5        # รอหลังข่าวกี่นาที
 
 @dataclass
 class TradingParameters:
-    """คลาสหลักรวบรวมพารามิเตอร์ทั้งหมด"""
+    """
+    คลาสหลักสำหรับพารามิเตอร์การเทรด - ฉบับสมบูรณ์
+    รวบรวมพารามิเตอร์การเทรดทั้งหมดอย่างเป็นระบบ
+    """
     
-    market_conditions: MarketConditionParams = field(default_factory=MarketConditionParams)
-    entry_params: EntryParams = field(default_factory=EntryParams)
-    recovery_params: RecoveryParams = field(default_factory=RecoveryParams)
-    money_management: MoneyManagementParams = field(default_factory=MoneyManagementParams)
-    session_params: SessionParams = field(default_factory=SessionParams)
-    performance_params: PerformanceParams = field(default_factory=PerformanceParams)
+    # === BASIC TRADING SETTINGS ===
+    symbol: str = "XAUUSD"
+    base_volume: float = 0.01               # ขนาดตำแหน่งเริ่มต้น
+    min_volume: float = 0.01                # ขนาดขั้นต่ำ
+    max_volume: float = 10.0                # ขนาดสูงสุด
+    max_spread: float = 3.0                 # Spread สูงสุดที่ยอมรับ (pips)
     
-    def get_strategy_params(self, strategy: EntryStrategy) -> Dict:
-        """ดึงพารามิเตอร์สำหรับกลยุทธ์เฉพาะ"""
-        strategy_map = {
-            EntryStrategy.TREND_FOLLOWING: self.entry_params.trend_following,
-            EntryStrategy.MEAN_REVERSION: self.entry_params.mean_reversion,
-            EntryStrategy.BREAKOUT_FALSE: self.entry_params.breakout_false,
-            EntryStrategy.NEWS_REACTION: self.entry_params.news_reaction,
-            EntryStrategy.SCALPING_ENGINE: self.entry_params.scalping
-        }
-        return strategy_map.get(strategy, {})
+    # === ENTRY PARAMETERS ===
+    signal_cooldown: int = 15               # ช่วงเวลาระหว่างสัญญาณ (วินาที)
+    min_confidence: float = 0.5             # Confidence ขั้นต่ำสำหรับเข้าออร์เดอร์
+    max_daily_entries: int = 200            # จำนวนการเข้าออร์เดอร์สูงสุดต่อวัน
+    entry_slippage_tolerance: float = 0.5   # ความคลาดเคลื่อนราคาที่ยอมรับ
     
-    def get_recovery_params(self, method: RecoveryMethod) -> Dict:
-        """ดึงพารามิเตอร์สำหรับวิธี Recovery เฉพาะ"""
-        recovery_map = {
-            RecoveryMethod.MARTINGALE_SMART: self.recovery_params.martingale_smart,
-            RecoveryMethod.GRID_INTELLIGENT: self.recovery_params.grid_intelligent,
-            RecoveryMethod.HEDGING_ADVANCED: self.recovery_params.hedging_advanced,
-            RecoveryMethod.AVERAGING_INTELLIGENT: self.recovery_params.averaging_intelligent,
-            RecoveryMethod.CORRELATION_RECOVERY: self.recovery_params.correlation_recovery
-        }
-        return recovery_map.get(method, {})
+    # === STRATEGY MANAGEMENT ===
+    strategies: Dict[EntryStrategy, StrategyParameters] = field(default_factory=dict)
+    strategy_selection_method: str = "WEIGHTED"  # WEIGHTED, PERFORMANCE, ADAPTIVE
     
-    def get_session_params(self, session_name: str) -> Dict:
-        """ดึงพารามิเตอร์สำหรับ session เฉพาะ"""
-        session_map = {
-            "ASIAN": self.session_params.asian_session,
-            "LONDON": self.session_params.london_session,
-            "NEW_YORK": self.session_params.newyork_session, 
-            "OVERLAP": self.session_params.overlap_session
-        }
-        return session_map.get(session_name, {})
+    # === RECOVERY MANAGEMENT ===
+    recovery_methods: Dict[RecoveryMethod, RecoveryParameters] = field(default_factory=dict)
+    recovery_selection_method: str = "MARKET_CONDITION"  # MARKET_CONDITION, PERFORMANCE, FIXED
     
-    def validate_parameters(self) -> List[str]:
+    # === POSITION SIZING ===
+    position_sizing: PositionSizingParameters = field(default_factory=PositionSizingParameters)
+    
+    # === TECHNICAL ANALYSIS ===
+    technical_params: TechnicalParameters = field(default_factory=TechnicalParameters)
+    
+    # === SESSION MANAGEMENT ===
+    sessions: Dict[str, SessionParameters] = field(default_factory=dict)
+    
+    # === VOLUME TARGET SETTINGS ===
+    volume_targets: Dict[str, float] = field(default_factory=lambda: {
+        "daily_minimum": 50.0,              # lots/วัน ขั้นต่ำ
+        "daily_target": 75.0,               # lots/วัน เป้าหมาย
+        "daily_maximum": 100.0,             # lots/วัน สูงสุด
+        "hourly_target": 4.0,               # lots/ชั่วโมง เฉลี่ย
+        "rebate_optimization": True         # เปิดการเพิ่มประสิทธิภาพ rebate
+    })
+    
+    # === RISK MANAGEMENT (แบบไม่จำกัด - เน้น Recovery) ===
+    risk_management: Dict[str, Any] = field(default_factory=lambda: {
+        "use_stop_loss": False,             # ❌ ห้ามใช้ Stop Loss
+        "use_take_profit": False,           # ❌ ห้ามใช้ Take Profit แบบดั้งเดิม
+        "recovery_mandatory": True,         # ✅ บังคับใช้ Recovery
+        "max_drawdown_warning": 30.0,      # เตือนเมื่อ Drawdown > 30%
+        "max_positions_total": 100,        # จำนวนตำแหน่งรวมสูงสุด
+        "emergency_stop_enabled": True,     # เปิดใช้การหยุดฉุกเฉิน
+        "correlation_limit": 0.8,           # จำกัด correlation ระหว่างตำแหน่ง
+        "max_daily_loss": 500.0,           # ขาดทุนสูงสุดต่อวัน ($)
+        "max_single_loss": 100.0           # ขาดทุนสูงสุดต่อ position ($)
+    })
+    
+    # === PERFORMANCE OPTIMIZATION ===
+    performance_settings: Dict[str, Any] = field(default_factory=lambda: {
+        "execution_speed": "FAST",          # ความเร็วในการ execute
+        "price_improvement": True,          # พยายามปรับปรุงราคา
+        "partial_fills": True,              # ยอมรับการ fill บางส่วน
+        "requote_handling": "AUTOMATIC",    # จัดการ requote อัตโนมัติ
+        "slippage_tolerance": 0.5,          # ความคลาดเคลื่อนที่ยอมรับ
+        "latency_threshold": 100,           # threshold ของ latency (ms)
+        "retry_attempts": 3,                # จำนวนครั้งที่ลองใหม่
+        "timeout_seconds": 30               # timeout ในการ execute
+    })
+    
+    # === ADVANCED FEATURES ===
+    advanced_features: Dict[str, Any] = field(default_factory=lambda: {
+        "machine_learning_enabled": False,   # เปิดใช้ ML
+        "sentiment_analysis": False,         # วิเคราะห์ sentiment
+        "news_impact_scoring": True,         # คะแนนผลกระทบข่าว
+        "correlation_trading": False,        # เทรดตาม correlation
+        "arbitrage_detection": False,        # ตรวจจับ arbitrage
+        "market_microstructure": False,     # วิเคราะห์ microstructure
+        "order_flow_analysis": False        # วิเคราะห์ order flow
+    })
+    
+    # === METADATA ===
+    version: str = "2.0.0"
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+    profile_name: str = "default"
+    
+    def __post_init__(self):
+        """การตั้งค่าเพิ่มเติมหลังจาก initialization"""
+        self._validate_parameters()
+        self._setup_default_strategies()
+        self._setup_default_recovery_methods()
+        self._setup_default_sessions()
+        self.updated_at = datetime.now()
+    
+    def _validate_parameters(self):
         """ตรวจสอบความถูกต้องของพารามิเตอร์"""
-        errors = []
+        # ตรวจสอบ volume
+        if self.min_volume > self.max_volume:
+            self.min_volume = 0.01
+            self.max_volume = 10.0
         
-        # ตรวจสอบ Volume Targets
-        if self.performance_params.daily_volume_min > self.performance_params.daily_volume_max:
-            errors.append("Daily volume min ต้องน้อยกว่า max")
+        if self.base_volume < self.min_volume:
+            self.base_volume = self.min_volume
+        elif self.base_volume > self.max_volume:
+            self.base_volume = self.max_volume
         
-        # ตรวจสอบ Money Management
-        if self.money_management.max_capital_risk_percent > 100:
-            errors.append("Max capital risk ต้องไม่เกิน 100%")
+        # ตรวจสอบ spread
+        if self.max_spread <= 0:
+            self.max_spread = 3.0
         
-        # ตรวจสอบ Recovery Parameters
-        for method, params in [
-            ("martingale", self.recovery_params.martingale_smart),
-            ("grid", self.recovery_params.grid_intelligent),
-            ("hedging", self.recovery_params.hedging_advanced),
-            ("averaging", self.recovery_params.averaging_intelligent)
-        ]:
-            if not params:
-                errors.append(f"Recovery parameters สำหรับ {method} ว่างเปล่า")
+        # ตรวจสอบ confidence
+        if not 0.0 <= self.min_confidence <= 1.0:
+            self.min_confidence = 0.5
         
-        return errors
+        # ตรวจสอบ volume targets
+        volume_targets = self.volume_targets
+        if volume_targets["daily_minimum"] > volume_targets["daily_target"]:
+            volume_targets["daily_minimum"] = volume_targets["daily_target"] * 0.7
     
-    def optimize_for_session(self, session_name: str) -> 'TradingParameters':
-        """ปรับแต่งพารามิเตอร์สำหรับ session เฉพาะ"""
-        # สร้าง copy ของ parameters
-        optimized = TradingParameters(
-            market_conditions=self.market_conditions,
-            entry_params=self.entry_params,
-            recovery_params=self.recovery_params,
-            money_management=self.money_management,
-            session_params=self.session_params,
-            performance_params=self.performance_params
+    def _setup_default_strategies(self):
+        """ตั้งค่า strategies เริ่มต้น"""
+        if not self.strategies:
+            default_strategies = {
+                EntryStrategy.SCALPING_ENGINE: StrategyParameters(
+                    strategy=EntryStrategy.SCALPING_ENGINE,
+                    weight=0.4,
+                    confidence_threshold=0.6,
+                    max_signals_per_hour=20,
+                    cooldown_seconds=15,
+                    parameters={
+                        "bb_touch_threshold": 0.8,
+                        "rsi_neutral_range": [45, 55],
+                        "max_spread": 2.0
+                    }
+                ),
+                EntryStrategy.TREND_FOLLOWING: StrategyParameters(
+                    strategy=EntryStrategy.TREND_FOLLOWING,
+                    weight=0.3,
+                    confidence_threshold=0.7,
+                    max_signals_per_hour=10,
+                    cooldown_seconds=30,
+                    parameters={
+                        "adx_min_strength": 25,
+                        "ma_alignment_required": True,
+                        "trend_confirmation_bars": 3
+                    }
+                ),
+                EntryStrategy.MEAN_REVERSION: StrategyParameters(
+                    strategy=EntryStrategy.MEAN_REVERSION,
+                    weight=0.2,
+                    confidence_threshold=0.65,
+                    max_signals_per_hour=15,
+                    cooldown_seconds=20,
+                    parameters={
+                        "rsi_extreme_threshold": 20,
+                        "bb_breakout_reversion": True,
+                        "mean_reversion_distance": 0.5
+                    }
+                ),
+                EntryStrategy.BREAKOUT_FALSE: StrategyParameters(
+                    strategy=EntryStrategy.BREAKOUT_FALSE,
+                    weight=0.07,
+                    confidence_threshold=0.75,
+                    max_signals_per_hour=5,
+                    cooldown_seconds=60,
+                    parameters={
+                        "volume_confirmation": True,
+                        "false_breakout_pips": 5,
+                        "reversal_confirmation_time": 300
+                    }
+                ),
+                EntryStrategy.NEWS_REACTION: StrategyParameters(
+                    strategy=EntryStrategy.NEWS_REACTION,
+                    weight=0.03,
+                    confidence_threshold=0.8,
+                    max_signals_per_hour=3,
+                    cooldown_seconds=120,
+                    parameters={
+                        "news_impact_threshold": 7,
+                        "reaction_delay_seconds": 30,
+                        "volatility_spike_required": True
+                    }
+                )
+            }
+            self.strategies = default_strategies
+    
+    def _setup_default_recovery_methods(self):
+        """ตั้งค่า recovery methods เริ่มต้น"""
+        if not self.recovery_methods:
+            default_recovery = {
+                RecoveryMethod.MARTINGALE_SMART: RecoveryParameters(
+                    method=RecoveryMethod.MARTINGALE_SMART,
+                    max_levels=8,
+                    multiplier=1.5,
+                    step_pips=10.0,
+                    dynamic_multiplier=True,
+                    volatility_adjustment=True
+                ),
+                RecoveryMethod.GRID_INTELLIGENT: RecoveryParameters(
+                    method=RecoveryMethod.GRID_INTELLIGENT,
+                    max_levels=12,
+                    multiplier=1.0,
+                    step_pips=15.0,
+                    dynamic_multiplier=False,
+                    correlation_factor=0.6
+                ),
+                RecoveryMethod.HEDGING_ADVANCED: RecoveryParameters(
+                    method=RecoveryMethod.HEDGING_ADVANCED,
+                    max_levels=6,
+                    multiplier=1.2,
+                    step_pips=20.0,
+                    correlation_factor=0.9,
+                    time_decay=0.05
+                ),
+                RecoveryMethod.AVERAGING_INTELLIGENT: RecoveryParameters(
+                    method=RecoveryMethod.AVERAGING_INTELLIGENT,
+                    max_levels=10,
+                    multiplier=1.3,
+                    step_pips=12.0,
+                    dynamic_multiplier=True,
+                    volatility_adjustment=True
+                )
+            }
+            self.recovery_methods = default_recovery
+    
+    def _setup_default_sessions(self):
+        """ตั้งค่า sessions เริ่มต้น"""
+        if not self.sessions:
+            default_sessions = {
+                "ASIAN": SessionParameters(
+                    session_name="ASIAN",
+                    start_hour=22, end_hour=8,
+                    expected_volatility="LOW",
+                    typical_spread=2.0,
+                    preferred_strategies=[EntryStrategy.MEAN_REVERSION, EntryStrategy.SCALPING_ENGINE],
+                    max_spread=2.5,
+                    position_sizing_multiplier=0.8,
+                    max_positions=8,
+                    target_signals_per_hour=3
+                ),
+                "LONDON": SessionParameters(
+                    session_name="LONDON",
+                    start_hour=15, end_hour=20,
+                    expected_volatility="HIGH",
+                    typical_spread=2.5,
+                    preferred_strategies=[EntryStrategy.TREND_FOLLOWING, EntryStrategy.BREAKOUT_FALSE],
+                    max_spread=3.0,
+                    position_sizing_multiplier=1.2,
+                    max_positions=12,
+                    target_signals_per_hour=8
+                ),
+                "NEW_YORK": SessionParameters(
+                    session_name="NEW_YORK",
+                    start_hour=20, start_minute=30, end_hour=5, end_minute=30,
+                    expected_volatility="VERY_HIGH",
+                    typical_spread=3.0,
+                    preferred_strategies=[EntryStrategy.NEWS_REACTION, EntryStrategy.TREND_FOLLOWING],
+                    max_spread=3.5,
+                    position_sizing_multiplier=1.5,
+                    max_positions=15,
+                    target_signals_per_hour=10
+                ),
+                "OVERLAP": SessionParameters(
+                    session_name="OVERLAP",
+                    start_hour=20, start_minute=30, end_hour=0,
+                    expected_volatility="EXTREME",
+                    typical_spread=3.5,
+                    preferred_strategies=[EntryStrategy.BREAKOUT_FALSE, EntryStrategy.NEWS_REACTION],
+                    max_spread=4.0,
+                    position_sizing_multiplier=1.8,
+                    max_positions=20,
+                    target_signals_per_hour=12
+                )
+            }
+            self.sessions = default_sessions
+    
+    def get_strategy_parameters(self, strategy: EntryStrategy) -> Optional[StrategyParameters]:
+        """ดึงพารามิเตอร์ของกลยุทธ์"""
+        return self.strategies.get(strategy)
+    
+    def get_recovery_parameters(self, method: RecoveryMethod) -> Optional[RecoveryParameters]:
+        """ดึงพารามิเตอร์ของ recovery method"""
+        return self.recovery_methods.get(method)
+    
+    def get_session_parameters(self, session: str) -> Optional[SessionParameters]:
+        """ดึงพารามิเตอร์ของ session"""
+        return self.sessions.get(session)
+    
+    def get_optimal_strategy_for_session(self, session: str) -> EntryStrategy:
+        """เลือกกลยุทธ์ที่เหมาะสมสำหรับ session"""
+        session_params = self.get_session_parameters(session)
+        
+        if session_params and session_params.preferred_strategies:
+            # เลือกจาก preferred strategies ตาม performance
+            best_strategy = session_params.preferred_strategies[0]
+            best_performance = 0.0
+            
+            for strategy in session_params.preferred_strategies:
+                strategy_params = self.get_strategy_parameters(strategy)
+                if strategy_params:
+                    performance = strategy_params.get_success_rate()
+                    if performance > best_performance:
+                        best_performance = performance
+                        best_strategy = strategy
+            
+            return best_strategy
+        
+        # Default fallback
+        return EntryStrategy.SCALPING_ENGINE
+    
+    def get_optimal_recovery_for_condition(self, market_condition: MarketCondition) -> RecoveryMethod:
+        """เลือก recovery method ที่เหมาะสมสำหรับสภาวะตลาด"""
+        
+        condition_recovery_map = {
+            MarketCondition.TRENDING_UP: RecoveryMethod.GRID_INTELLIGENT,
+            MarketCondition.TRENDING_DOWN: RecoveryMethod.GRID_INTELLIGENT,
+            MarketCondition.RANGING: RecoveryMethod.MARTINGALE_SMART,
+            MarketCondition.VOLATILE: RecoveryMethod.HEDGING_ADVANCED,
+            MarketCondition.NEWS_IMPACT: RecoveryMethod.CORRELATION_RECOVERY,
+            MarketCondition.QUIET: RecoveryMethod.AVERAGING_INTELLIGENT
+        }
+        
+        preferred_method = condition_recovery_map.get(market_condition, RecoveryMethod.AVERAGING_INTELLIGENT)
+        
+        # ตรวจสอบ performance ของ method นี้
+        recovery_params = self.get_recovery_parameters(preferred_method)
+        if recovery_params and recovery_params.get_recovery_success_rate() < 50.0:
+            # ถ้า performance ต่ำ ให้ใช้ default
+            return RecoveryMethod.AVERAGING_INTELLIGENT
+        
+        return preferred_method
+    
+    def calculate_position_size(self, confidence: float, session: str = "ASIAN", 
+                                account_balance: float = 10000.0, 
+                                market_volatility: float = 1.0) -> float:
+        """คำนวณขนาดตำแหน่ง"""
+        return self.position_sizing.calculate_position_size(
+            account_balance, confidence, market_volatility, session
+        )
+    
+    def adjust_parameters_by_performance(self):
+        """ปรับพารามิเตอร์ตาม performance"""
+        
+        # ปรับ strategy weights ตาม performance
+        total_weight = 0.0
+        for strategy_params in self.strategies.values():
+            if strategy_params.enabled:
+                success_rate = strategy_params.get_success_rate()
+                # ปรับ weight ตาม success rate
+                if success_rate > 70:
+                    strategy_params.weight *= 1.1  # เพิ่ม weight
+                elif success_rate < 40:
+                    strategy_params.weight *= 0.9  # ลด weight
+                
+                total_weight += strategy_params.weight
+        
+        # Normalize weights
+        if total_weight > 0:
+            for strategy_params in self.strategies.values():
+                strategy_params.weight /= total_weight
+        
+        # ปรับ recovery parameters ตาม performance
+        for recovery_params in self.recovery_methods.values():
+            success_rate = recovery_params.get_recovery_success_rate()
+            if success_rate < 50 and recovery_params.multiplier > 1.2:
+                recovery_params.multiplier *= 0.95  # ลด aggressiveness
+            elif success_rate > 80 and recovery_params.multiplier < 2.0:
+                recovery_params.multiplier *= 1.05  # เพิ่ม aggressiveness
+        
+        self.updated_at = datetime.now()
+    
+    def optimize_for_rebate(self):
+        """เพิ่มประสิทธิภาพสำหรับ rebate"""
+        
+        # เพิ่มความถี่ของการเทรด
+        for strategy_params in self.strategies.values():
+            if strategy_params.strategy in [EntryStrategy.SCALPING_ENGINE, EntryStrategy.MEAN_REVERSION]:
+                strategy_params.max_signals_per_hour = int(strategy_params.max_signals_per_hour * 1.2)
+                strategy_params.cooldown_seconds = max(10, int(strategy_params.cooldown_seconds * 0.8))
+        
+        # เพิ่ม target volume
+        self.volume_targets["daily_target"] = min(
+            self.volume_targets["daily_maximum"],
+            self.volume_targets["daily_target"] * 1.1
         )
         
-        # ปรับแต่งตาม session
-        session_config = self.get_session_params(session_name)
-        if session_config:
-            # ปรับ lot size multiplier
-            lot_multiplier = session_config.get("lot_size_multiplier", 1.0)
-            optimized.money_management.base_lot_size *= lot_multiplier
-            
-            # ปรับ max positions per hour
-            max_positions = session_config.get("max_positions_per_hour", 30)
-            # TODO: Apply to relevant parameters
+        # ลด confidence threshold เล็กน้อยเพื่อเพิ่มสัญญาณ
+        for strategy_params in self.strategies.values():
+            strategy_params.confidence_threshold = max(0.4, strategy_params.confidence_threshold - 0.05)
         
-        return optimized
-
-# === GLOBAL PARAMETERS INSTANCE ===
-_global_trading_params: Optional[TradingParameters] = None
-
-def get_trading_parameters() -> TradingParameters:
-    """ดึง Trading Parameters แบบ Singleton"""
-    global _global_trading_params
-    if _global_trading_params is None:
-        _global_trading_params = TradingParameters()
-    return _global_trading_params
-
-def update_trading_parameters(new_params: TradingParameters) -> None:
-    """อัพเดท Trading Parameters"""
-    global _global_trading_params
-    _global_trading_params = new_params
-
-def load_parameters_from_file(file_path: str) -> Optional[TradingParameters]:
-    """โหลดพารามิเตอร์จากไฟล์"""
-    # TODO: Implement file loading
-    return None
-
-def save_parameters_to_file(params: TradingParameters, file_path: str) -> bool:
-    """บันทึกพารามิเตอร์ลงไฟล์"""
-    # TODO: Implement file saving
-    return True
-
-# === PARAMETER VALIDATION FUNCTIONS ===
-
-def validate_lot_size(lot_size: float, symbol: str = "XAUUSD") -> bool:
-    """ตรวจสอบความถูกต้องของขนาด lot"""
-    # ขนาด lot ขั้นต่ำ/สูงสุดสำหรับ XAUUSD
-    min_lot = 0.01
-    max_lot = 100.0
-    step = 0.01
+        self.updated_at = datetime.now()
     
-    return (min_lot <= lot_size <= max_lot and 
-            lot_size % step == 0)
-
-def validate_recovery_levels(levels: int, method: RecoveryMethod) -> bool:
-    """ตรวจสอบจำนวนระดับ recovery"""
-    max_levels = {
-        RecoveryMethod.MARTINGALE_SMART: 10,
-        RecoveryMethod.GRID_INTELLIGENT: 15,
-        RecoveryMethod.HEDGING_ADVANCED: 5,
-        RecoveryMethod.AVERAGING_INTELLIGENT: 12,
-        RecoveryMethod.CORRELATION_RECOVERY: 8
-    }
+    def create_conservative_profile(self) -> 'TradingParameters':
+        """สร้าง profile แบบอนุรักษ์นิยม"""
+        conservative = copy.deepcopy(self)
+        
+        # ลด volume targets
+        conservative.volume_targets["daily_target"] *= 0.5
+        conservative.volume_targets["daily_maximum"] *= 0.6
+        
+        # เพิ่ม confidence threshold
+        for strategy_params in conservative.strategies.values():
+            strategy_params.confidence_threshold = min(0.9, strategy_params.confidence_threshold + 0.1)
+            strategy_params.max_signals_per_hour = max(1, strategy_params.max_signals_per_hour // 2)
+        
+        # ลด recovery aggressiveness
+        for recovery_params in conservative.recovery_methods.values():
+            recovery_params.multiplier = max(1.1, recovery_params.multiplier - 0.2)
+            recovery_params.max_levels = max(3, recovery_params.max_levels - 2)
+        
+        # ลด position sizing
+        conservative.position_sizing.risk_per_trade_percent *= 0.5
+        conservative.position_sizing.max_volume *= 0.5
+        
+        conservative.profile_name = "conservative"
+        return conservative
     
-    return 1 <= levels <= max_levels.get(method, 10)
-
-def calculate_required_margin(lot_size: float, leverage: int = 100) -> float:
-    """คำนวณ margin ที่ต้องใช้"""
-    # สูตรคำนวณ margin สำหรับ XAUUSD
-    # Margin = (Lot Size * Contract Size * Current Price) / Leverage
+    def create_aggressive_profile(self) -> 'TradingParameters':
+        """สร้าง profile แบบก้าวร้าว"""
+        aggressive = copy.deepcopy(self)
+        
+        # เพิ่ม volume targets
+        aggressive.volume_targets["daily_target"] *= 1.5
+        aggressive.volume_targets["daily_maximum"] *= 1.3
+        
+        # ลด confidence threshold
+        for strategy_params in aggressive.strategies.values():
+            strategy_params.confidence_threshold = max(0.3, strategy_params.confidence_threshold - 0.1)
+            strategy_params.max_signals_per_hour = min(50, int(strategy_params.max_signals_per_hour * 1.5))
+        
+        # เพิ่ม recovery aggressiveness
+        for recovery_params in aggressive.recovery_methods.values():
+            recovery_params.multiplier = min(3.0, recovery_params.multiplier + 0.3)
+            recovery_params.max_levels = min(15, recovery_params.max_levels + 3)
+        
+        # เพิ่ม position sizing
+        aggressive.position_sizing.risk_per_trade_percent *= 1.5
+        aggressive.position_sizing.max_volume *= 1.5
+        
+        aggressive.profile_name = "aggressive"
+        return aggressive
     
-    # ค่าประมาณสำหรับ XAUUSD
-    contract_size = 100  # 100 oz per lot
-    estimated_price = 2000  # USD per oz (ประมาณ)
+    def export_parameters(self, filename: Optional[str] = None) -> str:
+        """ส่งออกพารามิเตอร์"""
+        try:
+            if filename is None:
+                filename = f"trading_params_{self.profile_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            
+            # Convert to serializable format
+            export_data = self._to_serializable_dict()
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False, default=str)
+            
+            return filename
+            
+        except Exception as e:
+            print(f"❌ ไม่สามารถส่งออกพารามิเตอร์: {e}")
+            return ""
     
-    margin_required = (lot_size * contract_size * estimated_price) / leverage
-    return margin_required
+    def _to_serializable_dict(self) -> Dict[str, Any]:
+        """แปลงเป็น dict ที่ serialize ได้"""
+        result = {}
+        
+        for field_name, field_value in self.__dict__.items():
+            if isinstance(field_value, Enum):
+                result[field_name] = field_value.value
+            elif isinstance(field_value, datetime):
+                result[field_name] = field_value.isoformat()
+            elif isinstance(field_value, dict):
+                if field_name in ['strategies', 'recovery_methods', 'sessions']:
+                    # Handle complex object dictionaries
+                    nested_dict = {}
+                    for key, obj in field_value.items():
+                        if hasattr(obj, '__dict__'):
+                            obj_dict = {}
+                            for obj_field, obj_value in obj.__dict__.items():
+                                if isinstance(obj_value, Enum):
+                                    obj_dict[obj_field] = obj_value.value
+                                elif isinstance(obj_value, datetime):
+                                    obj_dict[obj_field] = obj_value.isoformat() if obj_value else None
+                                else:
+                                    obj_dict[obj_fiel
