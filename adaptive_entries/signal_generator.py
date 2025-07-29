@@ -121,7 +121,7 @@ class TechnicalIndicators:
 class MarketData:
     """ข้อมูลตลาด"""
     timestamp: datetime = field(default_factory=datetime.now)
-    symbol: str = "XAUUSD"
+    symbol: str = "XAUUSD.v"
     
     # OHLC
     open: float = 0.0

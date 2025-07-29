@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import json
-
+import random
 # Safe MT5 import
 try:
     import MetaTrader5 as mt5
