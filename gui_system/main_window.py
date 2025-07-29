@@ -709,7 +709,14 @@ class TradingSystemGUI:
             except Exception as e:
                 self.logger.error(f"❌ การเชื่อมต่อ MT5 ล้มเหลว: {e}")
                 self.root.after(0, lambda: self._update_connection_failed(str(e)))
-        
+                # ✅ เพิ่มบรรทัดนี้หลังจาก Connect สำเร็จ
+            try:
+                from adaptive_entries.signal_generator import get_signal_generator
+                signal_generator = get_signal_generator()
+                self.log_message("✅ GUI ส่งสัญญาณให้ Position Manager เริ่มทำงาน", "SUCCESS")
+            except Exception as e:
+                self.log_message(f"⚠️ Cannot notify Position Manager: {e}", "WARNING")
+
         # เริ่ม thread
         threading.Thread(target=connect_thread, daemon=True).start()
     
@@ -778,7 +785,14 @@ class TradingSystemGUI:
         except Exception as e:
             self.logger.error(f"❌ Error disconnecting MT5: {e}")
             self.log_message(f"Error disconnecting: {e}", "ERROR")
-    
+        try:
+            from adaptive_entries.signal_generator import get_signal_generator
+            signal_generator = get_signal_generator()
+            signal_generator.gui_connected = False  # บอกให้หยุดเทรด
+            self.log_message("🛑 GUI สั่งหยุด Position Manager", "INFO")
+        except Exception as e:
+            self.log_message(f"⚠️ Cannot notify Position Manager: {e}", "WARNING")
+
     def start_trading(self):
         """Start trading system - เชื่อมต่อระบบเทรดจริง (แก้ไขแล้ว)"""
         if not self.is_connected:

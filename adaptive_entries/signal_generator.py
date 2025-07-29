@@ -616,11 +616,13 @@ class SignalGenerator:
         self.mt5_provider = MT5DataProvider()
         self.technical_analyzer = TechnicalAnalyzer()
         self.signal_analyzer = SignalAnalyzer()
-        
+
         # System Status
         self.generator_active = False
         self.is_ready = False
-        
+
+        self.gui_connected = False  # ป้องกัน auto start จนกว่า GUI จะ Connect
+        self.trading_started = False
         # Signal Storage
         self.active_signals: List[EntrySignal] = []
         self.signal_history: List[EntrySignal] = []
@@ -640,78 +642,164 @@ class SignalGenerator:
         
         self.logger.info("🎯 Real MT5 Signal Generator initialized")
     
-    def start_signal_generation(self) -> None:
-        """เริ่มต้นการสร้าง Signals จากข้อมูลจริง"""
+    def start_signal_generation(self) -> bool:
+        """เริ่มต้นการสร้าง Signals จากข้อมูลจริง - ปรับปรุงแล้ว"""
+        
+        # เพิ่มตัวแปรถ้ายังไม่มี
+        if not hasattr(self, 'startup_count'):
+            self.startup_count = 0
+            self.last_stop_time = 0
+            self.min_restart_interval = 5
+        
+        # ตรวจสอบ cooldown
+        current_time = time.time()
+        if current_time - self.last_stop_time < self.min_restart_interval:
+            remaining_time = self.min_restart_interval - (current_time - self.last_stop_time)
+            self.logger.warning(f"⏳ รอ {remaining_time:.1f} วินาทีก่อนเริ่มใหม่")
+            time.sleep(remaining_time)
+        
         if self.generator_active:
             self.logger.warning("⚠️ Signal Generator กำลังทำงานอยู่แล้ว")
-            return
+            return True
         
-        self.logger.info("🚀 Starting Real MT5 Signal Generation System")
+        self.startup_count += 1
+        self.logger.info(f"🚀 Starting Real MT5 Signal Generation System (#{self.startup_count})")
+        
+        # ✅ ล้าง state เก่าก่อนเริ่ม
+        self.active_signals.clear()
+        while not self.signal_queue.empty():
+            try:
+                self.signal_queue.get_nowait()
+            except queue.Empty:
+                break
         
         # เชื่อมต่อ MT5
         if not self.mt5_provider.initialize_mt5():
             self.logger.error("❌ Cannot connect to MT5 - Signal Generator NOT READY")
             self.is_ready = False
-            return
+            return False
         
         # เริ่มต้นระบบ
         self.generator_active = True
         self.is_ready = True
         
+        # Reset timing
+        self.last_signal_time = datetime.now() - timedelta(seconds=60)  # ให้สามารถส่ง signal ได้ทันที
+        
         # เริ่ม Threading
         self.generator_thread = threading.Thread(
             target=self._real_signal_generation_loop,
             daemon=True,
-            name="RealSignalGenerationLoop"
+            name=f"RealSignalGenerationLoop_{self.startup_count}"
         )
         
         self.signal_monitor_thread = threading.Thread(
             target=self._signal_monitor_loop,
             daemon=True,
-            name="SignalMonitorLoop"
+            name=f"SignalMonitorLoop_{self.startup_count}"
         )
         
         self.generator_thread.start()
         self.signal_monitor_thread.start()
         
-        self.logger.info("✅ Real MT5 Signal Generation System started successfully")
+        self.logger.info(f"✅ Real MT5 Signal Generation System started successfully (#{self.startup_count})")
+        return True
     
-    def stop_signal_generation(self) -> None:
-        """หยุดการสร้าง Signals"""
+    def stop_signal_generation(self) -> bool:
+        """หยุดการสร้าง Signals - ปรับปรุงแล้ว"""
+        if not self.generator_active:
+            self.logger.debug("✅ Signal Generator หยุดอยู่แล้ว")
+            return True
+        
         self.logger.info("🛑 Stopping Real Signal Generation System")
         
+        # หยุดการทำงาน
         self.generator_active = False
         self.is_ready = False
         
+        # ✅ ล้าง signal queue ทันที
+        try:
+            cleared_count = 0
+            while not self.signal_queue.empty():
+                try:
+                    self.signal_queue.get_nowait()
+                    cleared_count += 1
+                except queue.Empty:
+                    break
+            
+            if cleared_count > 0:
+                self.logger.info(f"🗑️ ล้าง {cleared_count} signals จาก queue")
+            
+            # ล้าง active signals
+            old_count = len(self.active_signals)
+            self.active_signals.clear()
+            if old_count > 0:
+                self.logger.info(f"🗑️ ล้าง {old_count} active signals")
+                
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error clearing signals: {e}")
+        
+        # บันทึกเวลาที่หยุด
+        if hasattr(self, 'last_stop_time'):
+            self.last_stop_time = time.time()
+        
         # รอ threads ปิด
+        threads_stopped = True
         if self.generator_thread and self.generator_thread.is_alive():
+            self.logger.info("⏳ รอ generator thread หยุด...")
             self.generator_thread.join(timeout=5.0)
+            if self.generator_thread.is_alive():
+                self.logger.warning("⚠️ Generator thread ไม่ปิดภายในเวลาที่กำหนด")
+                threads_stopped = False
         
         if self.signal_monitor_thread and self.signal_monitor_thread.is_alive():
+            self.logger.info("⏳ รอ monitor thread หยุด...")
             self.signal_monitor_thread.join(timeout=5.0)
+            if self.signal_monitor_thread.is_alive():
+                self.logger.warning("⚠️ Monitor thread ไม่ปิดภายในเวลาที่กำหนด")
+                threads_stopped = False
         
         # ปิด MT5
         try:
             mt5.shutdown()
-        except:
-            pass
+            self.logger.info("🔌 MT5 connection closed")
+        except Exception as e:
+            self.logger.warning(f"⚠️ MT5 shutdown warning: {e}")
         
-        self.logger.info("✅ Real Signal Generation System stopped")
+        if threads_stopped:
+            self.logger.info("✅ Real Signal Generation System stopped successfully")
+        else:
+            self.logger.warning("⚠️ Real Signal Generation System stopped with warnings")
+        
+        return threads_stopped
     
     def _real_signal_generation_loop(self):
-        """Loop หลักสำหรับการสร้าง Signals จากข้อมูลจริง"""
+        """Loop หลักสำหรับการสร้าง Signals จากข้อมูลจริง - แก้ไขแล้ว"""
         self.logger.info("🔄 Real signal generation loop started")
         
-        while self.generator_active:
+        while self.generator_active:  # ✅ ต้องตรวจสอบ flag นี้ในทุก step
             try:
+                # ✅ ตรวจสอบ generator_active ก่อนทำงานทุกขั้นตอน
+                if not self.generator_active:
+                    self.logger.info("🛑 Signal generation loop stopping...")
+                    break
+                
                 # ตรวจสอบเงื่อนไขการสร้าง Signal
                 if self._should_generate_signal():
+                    # ✅ ตรวจสอบอีกครั้งก่อนดึงข้อมูล
+                    if not self.generator_active:
+                        break
+                    
                     # ดึงข้อมูลจาก MT5
                     current_tick = self.mt5_provider.get_current_tick()
                     if current_tick is None:
                         self.logger.warning("⚠️ No tick data from MT5")
                         time.sleep(5)
                         continue
+                    
+                    # ✅ ตรวจสอบอีกครั้งก่อนดึงข้อมูลประวัติ
+                    if not self.generator_active:
+                        break
                     
                     # ดึงข้อมูลประวัติราคา
                     df_m15 = self.mt5_provider.get_historical_data("M15", 100)
@@ -720,31 +808,66 @@ class SignalGenerator:
                         time.sleep(10)
                         continue
                     
+                    # ✅ ตรวจสอบอีกครั้งก่อนคำนวณ
+                    if not self.generator_active:
+                        break
+                    
                     # คำนวณ Technical Indicators
                     indicators = self.technical_analyzer.calculate_indicators(df_m15)
+                    
+                    # ✅ ตรวจสอบอีกครั้งก่อนวิเคราะห์
+                    if not self.generator_active:
+                        break
                     
                     # วิเคราะห์และสร้าง Signals
                     signals = self._analyze_and_create_signals(indicators, current_tick['ask'])
                     
+                    # ✅ ตรวจสอบอีกครั้งก่อนเพิ่ม signals
+                    if not self.generator_active:
+                        break
+                    
                     # เพิ่ม Signals ที่ได้
                     for signal in signals:
-                        if signal:
+                        if signal and self.generator_active:  # ✅ ตรวจสอบใน loop ด้วย
                             self._add_real_signal(signal)
                             self.signals_generated_today += 1
                             self.last_signal_time = datetime.now()
                             
                             self.logger.info(f"📨 New Real Signal: {signal.signal_id} | "
-                                           f"{signal.direction.value} | "
-                                           f"Price: {signal.current_price:.2f} | "
-                                           f"Confidence: {signal.confidence:.2f}")
+                                        f"{signal.direction.value} | "
+                                        f"Price: {signal.current_price:.2f} | "
+                                        f"Confidence: {signal.confidence:.2f}")
+                        
+                        # ✅ ตรวจสอบ flag หลังเพิ่มแต่ละ signal
+                        if not self.generator_active:
+                            break
+                
+                # ✅ ตรวจสอบก่อน sleep
+                if not self.generator_active:
+                    break
                 
                 # รอก่อนการตรวจสอบครั้งต่อไป
-                time.sleep(15)  # ตรวจสอบทุก 15 วินาที
-                
+                # ✅ ใช้ sleep ที่สามารถ interrupt ได้
+                for i in range(15):  # แทนที่ time.sleep(15)
+                    if not self.generator_active:
+                        break
+                    time.sleep(1)  # sleep ทีละ 1 วินาที เพื่อให้ responsive
+                    
             except Exception as e:
                 self.logger.error(f"❌ Error in real signal generation loop: {e}")
-                time.sleep(30)  # รอนานขึ้นเมื่อมี error
-    
+                # ✅ ตรวจสอบก่อน sleep แม้มี error
+                if not self.generator_active:
+                    break
+                
+                # ใช้ sleep ที่สามารถ interrupt ได้
+                for i in range(30):  # แทนที่ time.sleep(30)
+                    if not self.generator_active:
+                        break
+                    time.sleep(1)
+        
+        # ✅ เพิ่ม log เมื่อ loop จบ
+        self.logger.info("✅ Real signal generation loop stopped")
+
     def _analyze_and_create_signals(self, indicators: TechnicalIndicators, current_price: float) -> List[Optional[EntrySignal]]:
         """วิเคราะห์และสร้าง Signals จาก indicators"""
         signals = []
@@ -851,24 +974,56 @@ class SignalGenerator:
         return None
     
     def _should_generate_signal(self) -> bool:
-        """ตรวจสอบว่าควรสร้าง Signal หรือไม่"""
+        """ตรวจสอบว่าควรสร้าง Signal หรือไม่ - แก้ไขแล้ว"""
+        if not self.trading_started:
+            return False
+    
+        if not self.trading_started:
+            return False
+        
+        # ✅ ตรวจสอบ generator_active ก่อนทุกอย่าง
+        if not self.generator_active:
+            return False
+        
+        # ✅ ตรวจสอบว่า system ready หรือไม่
+        if not self.is_ready:
+            return False
+    
+        # ✅ ตรวจสอบ generator_active ก่อนทุกอย่าง
+        if not self.generator_active:
+            self.logger.debug("🛑 Generator not active - should not generate signal")
+            return False
+        
+        # ✅ ตรวจสอบว่า system ready หรือไม่
+        if not self.is_ready:
+            self.logger.debug("⚠️ System not ready - should not generate signal")
+            return False
+        
         # ตรวจสอบเวลาผ่านมาเพียงพอหรือไม่
         time_since_last = datetime.now() - self.last_signal_time
         if time_since_last < self.min_signal_interval:
+            remaining = (self.min_signal_interval - time_since_last).total_seconds()
+            self.logger.debug(f"⏰ Too soon to generate signal - wait {remaining:.1f}s more")
             return False
         
         # ตรวจสอบจำนวน signals ที่มีอยู่
         if len(self.active_signals) > 10:  # ไม่เก็บ signals เกิน 10 อัน
+            self.logger.debug(f"📊 Too many active signals ({len(self.active_signals)}) - should not generate")
             return False
         
         # ตรวจสอบ MT5 connection
         if not self.mt5_provider.connected:
+            self.logger.debug("🔌 MT5 not connected - should not generate signal")
             return False
         
+        self.logger.debug("✅ Should generate signal - all conditions met")
         return True
     
     def _add_real_signal(self, signal: EntrySignal):
         """เพิ่ม Real Signal เข้าระบบ"""
+         # ✅ เพิ่มการเช็คนี้ก่อนทำงาน
+        if not self.generator_active or not self.is_ready or not self.trading_started:
+            return
         try:
             # เพิ่มเข้า queue และ list
             self.signal_queue.put(signal)
@@ -892,27 +1047,53 @@ class SignalGenerator:
             self.logger.error(f"❌ Error adding real signal: {e}")
     
     def _signal_monitor_loop(self):
-        """Loop สำหรับติดตาม Signal stats"""
+        """Loop สำหรับติดตาม Signal stats - แก้ไขแล้ว"""
         self.logger.info("📊 Signal monitor loop started")
         
         while self.generator_active:
             try:
+                # ✅ ตรวจสอบ flag ก่อนทำงาน
+                if not self.generator_active:
+                    break
+                
                 # อัพเดท statistics
                 self._update_statistics()
+                
+                # ✅ ตรวจสอบอีกครั้ง
+                if not self.generator_active:
+                    break
                 
                 # ทำความสะอาด signals เก่า
                 self._cleanup_old_signals()
                 
+                # ✅ ตรวจสอบอีกครั้ง
+                if not self.generator_active:
+                    break
+                
                 # ตรวจสอบ MT5 connection status
                 self._check_mt5_connection()
                 
-                # รอ 60 วินาที
-                time.sleep(60)
-                
+                # ✅ ใช้ sleep ที่สามารถ interrupt ได้
+                for i in range(60):  # แทนที่ time.sleep(60)
+                    if not self.generator_active:
+                        break
+                    time.sleep(1)
+                    
             except Exception as e:
                 self.logger.error(f"❌ Error in signal monitor: {e}")
-                time.sleep(120)
-    
+                # ✅ ตรวจสอบก่อน sleep แม้มี error
+                if not self.generator_active:
+                    break
+                
+                # ใช้ sleep ที่สามารถ interrupt ได้
+                for i in range(120):  # แทนที่ time.sleep(120)
+                    if not self.generator_active:
+                        break
+                    time.sleep(1)
+        
+        # ✅ เพิ่ม log เมื่อ loop จบ
+        self.logger.info("✅ Signal monitor loop stopped")
+
     def _check_mt5_connection(self):
         """ตรวจสอบสถานะการเชื่อมต่อ MT5"""
         try:
@@ -972,7 +1153,7 @@ class SignalGenerator:
             self.logger.debug(f"🧹 Cleaned up {old_count - new_count} old signals")
     
     def get_system_status(self) -> Dict[str, Any]:
-        """ดึงสถานะระบบ"""
+        """ดึงสถานะระบบ - ปรับปรุงแล้ว"""
         current_tick = self.mt5_provider.get_current_tick() if self.mt5_provider.connected else None
         
         return {
@@ -982,6 +1163,10 @@ class SignalGenerator:
             "active_signals": len(self.active_signals),
             "signals_generated_today": self.signals_generated_today,
             "signals_executed_today": self.signals_executed_today,
+            "startup_count": getattr(self, 'startup_count', 0),  # ✅ เพิ่ม
+            "last_stop_time": getattr(self, 'last_stop_time', 0),  # ✅ เพิ่ม
+            "generator_thread_alive": hasattr(self, 'generator_thread') and self.generator_thread and self.generator_thread.is_alive(),  # ✅ เพิ่ม
+            "monitor_thread_alive": hasattr(self, 'signal_monitor_thread') and self.signal_monitor_thread and self.signal_monitor_thread.is_alive(),  # ✅ เพิ่ม
             "last_signal_time": self.last_signal_time.isoformat() if self.last_signal_time else None,
             "current_price": current_tick['ask'] if current_tick else 0.0,
             "current_bid": current_tick['bid'] if current_tick else 0.0,
@@ -989,6 +1174,47 @@ class SignalGenerator:
             "symbol": self.mt5_provider.symbol
         }
     
+    def safe_restart(self) -> bool:
+        """ปลอดภัยในการ restart ระบบ"""
+        self.logger.info("🔄 Safe restart Signal Generator...")
+        
+        # หยุดก่อน
+        stop_success = self.stop_signal_generation()
+        if not stop_success:
+            self.logger.error("❌ ไม่สามารถหยุดระบบได้อย่างสมบูรณ์")
+            return False
+        
+        # รอสักครู่
+        time.sleep(2)
+        
+        # เริ่มใหม่
+        start_success = self.start_signal_generation()
+        if not start_success:
+            self.logger.error("❌ ไม่สามารถเริ่มระบบใหม่ได้")
+            return False
+        
+        self.logger.info("✅ Safe restart สำเร็จ")
+        return True
+
+    def get_detailed_status_string(self) -> str:
+        """แสดงสถานะแบบละเอียด"""
+        status = self.get_system_status()
+        startup_count = getattr(self, 'startup_count', 0)
+        
+        return (
+            f"Signal Generator Status:\n"
+            f"  🔄 Active: {status['generator_active']}\n"
+            f"  ✅ Ready: {status['is_ready']}\n"
+            f"  🔢 Startup Count: {startup_count}\n"
+            f"  🧵 Generator Thread: {'Alive' if hasattr(self, 'generator_thread') and self.generator_thread and self.generator_thread.is_alive() else 'Dead'}\n"
+            f"  🧵 Monitor Thread: {'Alive' if hasattr(self, 'signal_monitor_thread') and self.signal_monitor_thread and self.signal_monitor_thread.is_alive() else 'Dead'}\n"
+            f"  📊 Signals Generated: {status['signals_generated_today']}\n"
+            f"  📥 Signals in Queue: {status['active_signals']}\n"
+            f"  🔌 MT5 Connected: {status['mt5_connected']}"
+        )
+
+
+
     def get_latest_signals(self, limit: int = 5) -> List[Dict[str, Any]]:
         """ดึง Signals ล่าสุด"""
         latest_signals = sorted(self.active_signals, 

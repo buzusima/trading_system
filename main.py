@@ -41,15 +41,10 @@ try:
     from adaptive_entries.signal_generator import get_signal_generator
     from mt5_integration.order_executor import get_smart_order_executor, OrderType
     
+
     def intelligent_position_manager(signal_generator, order_executor, position_tracker, logger):
         """
-        🧠 Intelligent Position Manager - ระบบจัดการ Position อัจฉริยะ
-        
-        Logic:
-        1. ไม่มี positions → วิเคราะห์และสร้าง position ใหม่
-        2. มี positions กำไร → ปล่อยให้ Profit System เก็บ
-        3. มี positions ขาดทุน → ใช้ Recovery ช่วยให้ปิดเร็วขึ้น
-        4. ปิดครบหมดแล้ว → กลับไปข้อ 1
+        🧠 Intelligent Position Manager - ระบบจัดการ Position อัจฉริยะ (แก้ไขแล้ว)
         """
         logger.info("🧠 Intelligent Position Manager เริ่มทำงาน")
         
@@ -57,147 +52,230 @@ try:
         current_cycle = "ANALYSIS"  # ANALYSIS, MONITORING, RECOVERY
         last_analysis_time = 0
         analysis_cooldown = 120  # วิเคราะห์ใหม่ทุก 2 นาที (หลังจากปิดครบ)
+        signal_generator_running = False  # ✨ เพิ่มการติดตามสถานะ
+        last_order_attempt = 0  # ✨ เพิ่ม: ป้องกันส่งออเดอร์บ่อย
+        order_cooldown = 30  # ✨ ห้ามส่งออเดอร์ถ้ายังไม่ครบ 30 วินาที
         
         while True:
             try:
+                # ✅ เพิ่มการตรวจสอบว่ากดปุ่ม "เริ่มเทรด" แล้วหรือไม่
+                if not getattr(signal_generator, 'trading_started', False):
+                    logger.debug("⏳ รอให้กดปุ่ม 'เริ่มเทรด' ก่อน...")
+                    time.sleep(5)
+                    continue
+                
                 # ตรวจสอบ positions ปัจจุบัน
                 current_positions = order_executor.get_open_positions("XAUUSD")
                 total_positions = len(current_positions)
+                current_time = time.time()
+                
+                # 📊 แสดงสถานะปัจจุบัน
+                if current_time % 30 < 10:  # แสดงทุก 30 วินาที
+                    logger.debug(f"📊 Positions: {total_positions} | Cycle: {current_cycle} | "
+                                f"Signal Generator: {'Running' if signal_generator_running else 'Stopped'}")
                 
                 if total_positions == 0:
                     # 🎯 ไม่มี positions → โหมดวิเคราะห์
-                    current_cycle = "ANALYSIS"
-                    current_time = time.time()
+                    if current_cycle != "ANALYSIS":
+                        logger.info("📊 Positions: 0 → เปลี่ยนเป็นโหมด ANALYSIS")
+                        current_cycle = "ANALYSIS"
                     
                     # 🔄 เริ่ม Signal Generator ใหม่เมื่อไม่มี positions
-                    try:
-                        signal_generator.start_signal_generation()
-                        logger.info("🔄 เริ่ม Signal Generator ใหม่ - พร้อมวิเคราะห์")
-                    except Exception as e:
-                        logger.warning(f"⚠️ ไม่สามารถเริ่ม Signal Generator: {e}")
+                    if not signal_generator_running:
+                        try:
+                            # ✨ ตรวจสอบสถานะก่อนเริ่ม
+                            status = signal_generator.get_system_status()
+                            if not status.get('generator_active', False):
+                                success = signal_generator.start_signal_generation()
+                                signal_generator_running = success
+                                if success:
+                                    logger.info("🔄 เริ่ม Signal Generator ใหม่ - พร้อมวิเคราะห์")
+                                else:
+                                    logger.error("❌ ไม่สามารถเริ่ม Signal Generator")
+                            else:
+                                signal_generator_running = True
+                                logger.debug("✅ Signal Generator ทำงานอยู่แล้ว")
+                        except Exception as e:
+                            logger.warning(f"⚠️ ไม่สามารถเริ่ม Signal Generator: {e}")
+                            signal_generator_running = False
                     
-                    # ตรวจสอบ cooldown
+                    # ✨ ตรวจสอบ order cooldown
+                    if current_time - last_order_attempt < order_cooldown:
+                        remaining = order_cooldown - (current_time - last_order_attempt)
+                        logger.debug(f"⏰ รอส่งออเดอร์อีก {remaining:.0f} วินาที")
+                        time.sleep(10)
+                        continue
+                    
+                    # ตรวจสอบ analysis cooldown  
                     if current_time - last_analysis_time >= analysis_cooldown:
                         logger.info("🔍 ไม่มี positions → เริ่มวิเคราะห์ตลาดใหม่")
                         
                         # รับ signal จาก Signal Generator
-                        signal = signal_generator.get_next_signal()
-                        
-                        if signal:
-                            logger.info(f"📨 Signal ใหม่: {signal.signal_id} | {signal.direction.value} | "
-                                      f"Price: {signal.current_price:.2f} | Confidence: {signal.confidence:.2f}")
+                        if signal_generator_running:
+                            signal = signal_generator.get_next_signal()
                             
-                            # แปลง Signal เป็น Order
-                            if signal.direction.value == "BUY":
-                                order_type = OrderType.BUY
-                            elif signal.direction.value == "SELL":
-                                order_type = OrderType.SELL
-                            else:
-                                logger.warning(f"⚠️ Invalid signal direction: {signal.direction.value}")
-                                time.sleep(10)
-                                continue
-                            
-                            # กำหนด volume (เริ่มต้นด้วย 0.01)
-                            volume = 0.01
-                            
-                            # ส่งออเดอร์
-                            result = order_executor.send_market_order(
-                                symbol="XAUUSD.v",
-                                order_type=order_type,
-                                volume=volume,
-                                comment=f"Smart_{signal.signal_id[:8]}",
-                                strategy_name=signal.source_engine.value,
-                                recovery_level=0
-                            )
-                            
-                            if result.status.value == "FILLED":
-                                last_analysis_time = current_time
-                                current_cycle = "MONITORING"
+                            if signal:
+                                logger.info(f"📨 Signal ใหม่: {signal.signal_id} | {signal.direction.value} | "
+                                        f"Price: {signal.current_price:.2f} | Confidence: {signal.confidence:.2f}")
                                 
-                                # 🛑 หยุด Signal Generator หลังส่งออเดอร์สำเร็จ
-                                try:
-                                    signal_generator.stop_signal_generation()
-                                    logger.info("🛑 หยุด Signal Generator - รอให้ position ปิดก่อน")
-                                except Exception as e:
-                                    logger.warning(f"⚠️ ไม่สามารถหยุด Signal Generator: {e}")
+                                # แปลง Signal เป็น Order
+                                if signal.direction.value == "BUY":
+                                    order_type = OrderType.BUY
+                                elif signal.direction.value == "SELL":
+                                    order_type = OrderType.SELL
+                                else:
+                                    logger.warning(f"⚠️ Invalid signal direction: {signal.direction.value}")
+                                    time.sleep(10)
+                                    continue
                                 
-                                logger.info(f"✅ Position ใหม่สร้างสำเร็จ: {order_type.value} {volume} lots | "
-                                          f"Price: {result.price_executed:.2f}")
-                                logger.info("👁️ เปลี่ยนสู่โหมด MONITORING - รอดูผลลัพธ์")
+                                # กำหนด volume (เริ่มต้นด้วย 0.01)
+                                volume = 0.01
+                                
+                                # ส่งออเดอร์
+                                logger.info(f"📤 กำลังส่งออเดอร์: {order_type.value} {volume} lots")
+                                result = order_executor.send_market_order(
+                                    symbol="XAUUSD.v",
+                                    order_type=order_type,
+                                    volume=volume,
+                                    comment=f"Smart_{signal.signal_id[:8]}",
+                                    strategy_name=signal.source_engine.value,
+                                    recovery_level=0
+                                )
+                                
+                                # ✨ บันทึกเวลาที่ส่งออเดอร์
+                                last_order_attempt = current_time
+                                
+                                if result.status.value == "FILLED":
+                                    last_analysis_time = current_time
+                                    current_cycle = "MONITORING"
+                                    
+                                    # 🛑 หยุด Signal Generator ทันทีหลังส่งออเดอร์สำเร็จ
+                                    if signal_generator_running:
+                                        try:
+                                            success = signal_generator.stop_signal_generation()
+                                            signal_generator_running = not success
+                                            logger.info("🛑 หยุด Signal Generator - รอให้ position ปิดก่อน")
+                                            
+                                            # ✨ ล้าง signals ที่เหลือใน queue
+                                            try:
+                                                while True:
+                                                    remaining_signal = signal_generator.get_next_signal()
+                                                    if remaining_signal is None:
+                                                        break
+                                                    logger.debug(f"🗑️ ลบ signal ที่เหลือ: {remaining_signal.signal_id}")
+                                            except:
+                                                pass
+                                                
+                                        except Exception as e:
+                                            logger.warning(f"⚠️ ไม่สามารถหยุด Signal Generator: {e}")
+                                    
+                                    logger.info(f"✅ Position ใหม่สร้างสำเร็จ: {order_type.value} {volume} lots | "
+                                            f"Price: {result.price_executed:.2f}")
+                                    logger.info("👁️ เปลี่ยนสู่โหมด MONITORING - รอดูผลลัพธ์")
+                                else:
+                                    logger.error(f"❌ สร้าง Position ล้มเหลว: {result.error_description}")
                             else:
-                                logger.error(f"❌ สร้าง Position ล้มเหลว: {result.error_description}")
-                        
+                                logger.debug("⏳ ไม่มี signals ใหม่")
                         else:
-                            logger.info("📊 ไม่มี Signal ในขณะนี้ - รอการวิเคราะห์")
-                    
+                            logger.debug("⏳ รอ Signal Generator เริ่มทำงาน...")
+                            
                     else:
-                        time_left = int(analysis_cooldown - (current_time - last_analysis_time))
-                        logger.info(f"⏳ รอ Cooldown อีก {time_left} วินาที ก่อนวิเคราะห์ใหม่")
+                        # ยังไม่ถึงเวลา cooldown
+                        remaining_time = analysis_cooldown - (current_time - last_analysis_time)
+                        if remaining_time > 60:  # แสดงเฉพาะถ้าเหลือเกิน 1 นาที
+                            logger.debug(f"⏰ รอ analysis cooldown อีก {remaining_time:.0f} วินาที")
                 
                 else:
-                    # 📊 มี positions → โหมดจัดการ
-                    # คำนวณ P&L รวม
-                    total_pnl = sum(pos['profit'] for pos in current_positions)
-                    profitable_positions = [pos for pos in current_positions if pos['profit'] > 0]
-                    losing_positions = [pos for pos in current_positions if pos['profit'] < -30.0]  # ขาดทุนเกิน $30
-                    
-                    logger.info(f"📊 Positions: {total_positions} | Total P&L: ${total_pnl:.2f} | "
-                              f"Profit: {len(profitable_positions)} | Loss: {len(losing_positions)}")
-                    
-                    if losing_positions:
-                        # 🔄 มี positions ขาดทุน → โหมด RECOVERY
-                        current_cycle = "RECOVERY"
-                        logger.warning(f"🔄 โหมด RECOVERY - มี {len(losing_positions)} positions ขาดทุน")
-                        
-                        # หา position ขาดทุนมากที่สุด
-                        worst_position = min(losing_positions, key=lambda p: p['profit'])
-                        loss_amount = abs(worst_position['profit'])
-                        
-                        logger.info(f"🎯 Target Recovery: Position {worst_position['ticket']} | "
-                                  f"Loss: ${loss_amount:.2f} | Type: {worst_position['type']}")
-                        
-                        # คำนวณ Recovery Order
-                        recovery_volume = min(worst_position['volume'] * 1.5, 0.05)  # Martingale x1.5, จำกัด 0.05
-                        recovery_type = OrderType.SELL if worst_position['type'] == 'BUY' else OrderType.BUY
-                        
-                        # ส่ง Recovery Order
-                        recovery_result = order_executor.send_market_order(
-                            symbol="XAUUSD",
-                            order_type=recovery_type,
-                            volume=recovery_volume,
-                            comment=f"Recov_{worst_position['ticket']}",
-                            strategy_name="SMART_RECOVERY",
-                            recovery_level=1
-                        )
-                        
-                        if recovery_result.status.value == "FILLED":
-                            logger.info(f"✅ Recovery Order สำเร็จ: {recovery_type.value} {recovery_volume} lots | "
-                                      f"Price: {recovery_result.price_executed:.2f}")
-                        else:
-                            logger.error(f"❌ Recovery Order ล้มเหลว: {recovery_result.error_description}")
-                    
-                    elif total_pnl > 0:
-                        # 💰 P&L รวมเป็นบวก → โหมด MONITORING (ปล่อยให้ Profit System ทำงาน)
+                    # 👁️ มี positions → โหมด MONITORING/RECOVERY
+                    if current_cycle == "ANALYSIS":
+                        logger.info(f"📊 Positions: {total_positions} → เปลี่ยนเป็นโหมด MONITORING")
                         current_cycle = "MONITORING"
-                        logger.info("💰 Portfolio มีกำไร - ปล่อยให้ Profit System เก็บกำไร")
                     
-                    else:
-                        # 📊 สถานะปกติ → โหมด MONITORING
-                        current_cycle = "MONITORING"
-                        logger.info("📊 กำลังติดตาม positions - รอดูการเปลี่ยนแปลง")
+                    # ✨ ตรวจสอบและหยุด Signal Generator ถ้ายังทำงานอยู่
+                    if signal_generator_running:
+                        try:
+                            success = signal_generator.stop_signal_generation()
+                            signal_generator_running = not success
+                            logger.info("🛑 หยุด Signal Generator - มี positions อยู่")
+                            
+                            # ✨ ล้าง signals ที่เหลือใน queue
+                            try:
+                                signals_cleared = 0
+                                while True:
+                                    remaining_signal = signal_generator.get_next_signal()
+                                    if remaining_signal is None:
+                                        break
+                                    signals_cleared += 1
+                                if signals_cleared > 0:
+                                    logger.info(f"🗑️ ล้าง {signals_cleared} signals ที่เหลือ")
+                            except:
+                                pass
+                                
+                        except Exception as e:
+                            logger.warning(f"⚠️ ไม่สามารถหยุด Signal Generator: {e}")
+                    
+                    # คำนวณกำไร/ขาดทุนรวม
+                    total_profit = sum(pos.get('profit', 0) for pos in current_positions)
+                    profitable_positions = len([pos for pos in current_positions if pos.get('profit', 0) > 0])
+                    losing_positions = len([pos for pos in current_positions if pos.get('profit', 0) < 0])
+                    
+                    if current_time % 30 < 10:  # แสดงทุก 30 วินาที
+                        logger.info(f"💰 P&L: ${total_profit:.2f} | กำไร: {profitable_positions} | ขาดทุน: {losing_positions}")
+                    
+                    # ตรวจสอบว่าควรใช้ Recovery หรือไม่
+                    if total_profit < -5:  # ขาดทุนเกิน $50
+                        if current_cycle != "RECOVERY":
+                            logger.warning(f"🚨 ขาดทุนเกิน $50 (${total_profit:.2f}) → เปลี่ยนเป็นโหมด RECOVERY")
+                            current_cycle = "RECOVERY"
+                            # TODO: เริ่ม Recovery System
+                    elif total_profit > 2:  # กำไรเกิน $10
+                        if current_cycle != "MONITORING":
+                            logger.info(f"💚 กำไร ${total_profit:.2f} → กลับเป็นโหมด MONITORING")
+                            current_cycle = "MONITORING"
+                    
+                    # ปล่อยให้ Profit System และ Recovery System จัดการ
+                    logger.debug("👁️ โหมด MONITORING - ปล่อยให้ระบบอื่นจัดการ")
                 
-                # รอก่อนรอบถัดไป
-                if current_cycle == "ANALYSIS":
-                    time.sleep(30)  # วิเคราะห์ทุก 30 วินาที
-                elif current_cycle == "MONITORING":
-                    time.sleep(15)  # ติดตามทุก 15 วินาที
-                elif current_cycle == "RECOVERY":
-                    time.sleep(10)  # Recovery ทุก 10 วินาที
+                # รอสักครู่ก่อนตรวจสอบอีกครั้ง
+                time.sleep(10)  # ตรวจสอบทุก 10 วินาที
                 
             except Exception as e:
-                logger.error(f"❌ Position Manager error: {e}")
-                time.sleep(20)
-    
+                logger.error(f"❌ ข้อผิดพลาดใน Position Manager: {e}")
+                time.sleep(30)  # รอนานขึ้นถ้ามี error
+            
+            except KeyboardInterrupt:
+                logger.info("⏹️ หยุด Position Manager จากผู้ใช้")
+                break
+        
+        # ปิดระบบ
+        try:
+            if signal_generator_running:
+                stop_success = signal_generator.stop_signal_generation()
+                if stop_success:
+                    signal_generator_running = False
+                    logger.info("🛑 หยุด Signal Generator ก่อนปิดระบบ - สำเร็จ")
+                else:
+                    logger.error("❌ หยุด Signal Generator ไม่สำเร็จ - Force stop")
+                    # Force หยุด
+                    signal_generator.generator_active = False
+                    signal_generator.is_ready = False
+                    signal_generator_running = False
+                    logger.info("🛑 Force stop Signal Generator เสร็จ")
+            else:
+                logger.info("✅ Signal Generator หยุดอยู่แล้ว")
+        except Exception as e:
+            logger.error(f"❌ Error stopping Signal Generator: {e}")
+            # Force หยุดถ้ามี error
+            try:
+                signal_generator.generator_active = False
+                signal_generator.is_ready = False
+                signal_generator_running = False
+                logger.info("🛑 Emergency force stop Signal Generator")
+            except:
+                pass
+
+        logger.info("✅ Intelligent Position Manager หยุดทำงาน")
+
     def main():
         """
         ฟังก์ชันหลักสำหรับเริ่มต้นระบบ
