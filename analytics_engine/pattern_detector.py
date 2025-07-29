@@ -2366,7 +2366,7 @@ async def quick_pattern_detection(price_data: List[Dict[str, Any]]) -> List[Patt
     detector = get_pattern_detector()
     return await detector.detect_patterns(price_data)
 
-def create_mock_price_data(symbol: str = "XAUUSD", bars: int = 50, 
+def create_mock_price_data(symbol: str = "XAUUSD.v", bars: int = 50, 
                          start_price: float = 1850.0) -> List[Dict[str, Any]]:
     """
     สร้างข้อมูลราคาจำลองสำหรับทดสอบ

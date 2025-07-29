@@ -150,7 +150,7 @@ class TradingSignal:
     """สัญญาณการเทรด - ข้อมูลครบถ้วน"""
     signal_id: str
     timestamp: datetime
-    symbol: str = "XAUUSD"
+    symbol: str = "XAUUSD.v"
     
     # Signal Properties
     signal_type: SignalType = SignalType.HOLD
@@ -396,7 +396,7 @@ class IntelligentSignalGenerator:
         except ImportError:
             self.logger.warning("⚠️ ไม่สามารถโหลด system settings - ใช้ค่าเริ่มต้น")
             return {
-                'symbol': 'XAUUSD',
+                'symbol': 'XAUUSD.v',
                 'trading_mode': 'LIVE',
                 'high_frequency_mode': True,
                 'daily_volume_target_min': 50.0,
@@ -558,7 +558,7 @@ class IntelligentSignalGenerator:
                 
                 return MarketData(
                     timestamp=datetime.now(),
-                    symbol="XAUUSD",
+                    symbol="XAUUSD.v",
                     bid=base_price - spread/2,
                     ask=base_price + spread/2,
                     spread=spread,
@@ -578,7 +578,7 @@ class IntelligentSignalGenerator:
             
             return MarketData(
                 timestamp=datetime.fromtimestamp(tick.time),
-                symbol="XAUUSD",
+                symbol="XAUUSD.v",
                 bid=tick.bid,
                 ask=tick.ask,
                 spread=(tick.ask - tick.bid) / symbol_info.point,

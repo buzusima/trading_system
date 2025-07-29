@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any, Callable
 from enum import Enum
 import json
-
+import asyncio
 # เชื่อมต่อ internal modules
 from config.settings import get_system_settings, MarketSession
 from config.trading_params import get_trading_parameters, EntryStrategy, RecoveryMethod
@@ -94,7 +94,7 @@ class SizingParameters:
     largest_position_size: float = 0.0         # Position size ที่ใหญ่ที่สุด
     
     # Symbol Specific
-    symbol: str = "XAUUSD"
+    symbol: str = "XAUUSD.v"
     point_value: float = 0.01                  # ค่า 1 point
     tick_size: float = 0.01                    # Tick size
     contract_size: float = 100.0               # Contract size

@@ -1,0 +1,209 @@
+{
+  "trading_mode": "LIVE",
+  "symbol": "XAUUSD",
+  "environment": "production",
+  "daily_volume_target_min": 50.0,
+  "daily_volume_target_max": 100.0,
+  "rebate_optimization": true,
+  "target_rebate_per_day": 500.0,
+  "timeframes_analysis": [
+    "M1",
+    "M5",
+    "M15",
+    "H1"
+  ],
+  "market_analysis_interval": 1,
+  "adx_trending_threshold": 25.0,
+  "adx_ranging_threshold": 20.0,
+  "atr_period": 14,
+  "atr_multiplier_high": 1.5,
+  "atr_multiplier_low": 0.8,
+  "rsi_period": 14,
+  "rsi_overbought": 70.0,
+  "rsi_oversold": 30.0,
+  "bollinger_period": 20,
+  "bollinger_deviation": 2.0,
+  "session_timings": {
+    "ASIAN": {
+      "start_hour": 22,
+      "start_minute": 0,
+      "end_hour": 8,
+      "end_minute": 0,
+      "timezone": "GMT+7",
+      "active_days": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "LONDON": {
+      "start_hour": 15,
+      "start_minute": 0,
+      "end_hour": 20,
+      "end_minute": 0,
+      "timezone": "GMT+7",
+      "active_days": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "NEW_YORK": {
+      "start_hour": 20,
+      "start_minute": 30,
+      "end_hour": 5,
+      "end_minute": 30,
+      "timezone": "GMT+7",
+      "active_days": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "OVERLAP": {
+      "start_hour": 20,
+      "start_minute": 30,
+      "end_hour": 0,
+      "end_minute": 0,
+      "timezone": "GMT+7",
+      "active_days": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    }
+  },
+  "session_parameters": {
+    "ASIAN": {
+      "volatility_expectation": "LOW",
+      "preferred_strategies": [
+        "MEAN_REVERSION",
+        "SCALPING_ENGINE"
+      ],
+      "max_spread": 2.5,
+      "position_sizing_multiplier": 0.8,
+      "signal_frequency": "NORMAL"
+    },
+    "LONDON": {
+      "volatility_expectation": "HIGH",
+      "preferred_strategies": [
+        "TREND_FOLLOWING",
+        "BREAKOUT_FALSE"
+      ],
+      "max_spread": 3.0,
+      "position_sizing_multiplier": 1.2,
+      "signal_frequency": "HIGH"
+    },
+    "NEW_YORK": {
+      "volatility_expectation": "VERY_HIGH",
+      "preferred_strategies": [
+        "NEWS_REACTION",
+        "TREND_FOLLOWING"
+      ],
+      "max_spread": 3.5,
+      "position_sizing_multiplier": 1.5,
+      "signal_frequency": "VERY_HIGH"
+    },
+    "OVERLAP": {
+      "volatility_expectation": "EXTREME",
+      "preferred_strategies": [
+        "BREAKOUT_FALSE",
+        "NEWS_REACTION"
+      ],
+      "max_spread": 4.0,
+      "position_sizing_multiplier": 1.8,
+      "signal_frequency": "EXTREME"
+    }
+  },
+  "high_frequency_mode": true,
+  "max_positions_per_hour": 50,
+  "min_entry_interval_seconds": 10,
+  "signal_cooldown_seconds": 15,
+  "mt5_login": null,
+  "mt5_password": null,
+  "mt5_server": null,
+  "mt5_path": null,
+  "mt5_timeout": 10000,
+  "mt5_portable": false,
+  "mt5_auto_detect": true,
+  "gui_theme": "DARK",
+  "gui_update_interval": 1000,
+  "gui_width": 1400,
+  "gui_height": 900,
+  "gui_resizable": true,
+  "gui_always_on_top": false,
+  "gui_minimize_to_tray": true,
+  "gui_show_splash": true,
+  "log_level": "INFO",
+  "log_to_file": true,
+  "log_file_path": "logs/trading_system.log",
+  "log_max_file_size": 10485760,
+  "log_backup_count": 5,
+  "log_console_output": true,
+  "log_performance_metrics": true,
+  "trading_limits": {
+    "max_daily_volume": 100.0,
+    "max_hourly_volume": 10.0,
+    "max_positions_total": 50,
+    "max_positions_per_symbol": 10,
+    "max_daily_trades": 200,
+    "max_spread": 5.0,
+    "min_equity": 1000.0,
+    "max_drawdown_percent": 30.0
+  },
+  "risk_management": {
+    "use_stop_loss": false,
+    "use_take_profit": false,
+    "recovery_mandatory": true,
+    "max_recovery_levels": 10,
+    "recovery_multiplier": 1.5,
+    "emergency_stop_enabled": true,
+    "correlation_limit": 0.8,
+    "news_trading_enabled": true,
+    "weekend_trading": false
+  },
+  "performance_settings": {
+    "max_cpu_usage": 80.0,
+    "max_memory_usage": 1024.0,
+    "update_interval_ms": 1000,
+    "data_cache_size": 10000,
+    "log_buffer_size": 1000,
+    "cleanup_interval_hours": 24,
+    "backup_interval_hours": 6
+  },
+  "notification_settings": {
+    "enable_sound": true,
+    "enable_popup": true,
+    "enable_email": false,
+    "enable_line": false,
+    "email_smtp_server": "",
+    "email_smtp_port": 587,
+    "email_username": "",
+    "email_password": "",
+    "email_to": [],
+    "line_token": "",
+    "notify_on_error": true,
+    "notify_on_position_open": false,
+    "notify_on_position_close": true,
+    "notify_on_recovery": true,
+    "notify_on_profit_target": true,
+    "notify_on_system_start": true
+  },
+  "version": "2.0.0",
+  "created_at": "2025-07-30T02:36:02.840258",
+  "updated_at": "2025-07-30T02:36:02.841260",
+  "profile_name": "default",
+  "config_file_path": "config/settings.json",
+  "debug_mode": false,
+  "enable_profiling": false,
+  "mock_mt5": false,
+  "simulation_speed": 1.0
+}

@@ -83,7 +83,7 @@ except ImportError as e:
 class PositionData:
     """ข้อมูล Position ที่ปรับปรุงแล้ว"""
     ticket: str
-    symbol: str = "XAUUSD"
+    symbol: str = "XAUUSD.v"
     type: str = "BUY"  # BUY or SELL
     volume: float = 0.01
     price_open: float = 0.0
@@ -419,7 +419,7 @@ class EnhancedPositionTracker:
         with self.tracker_lock:
             return self.positions.get(ticket)
     
-    def get_positions_by_symbol(self, symbol: str = "XAUUSD") -> List[PositionData]:
+    def get_positions_by_symbol(self, symbol: str = "XAUUSD.v") -> List[PositionData]:
         """📊 ดึง Positions ตาม Symbol"""
         with self.tracker_lock:
             return [pos for pos in self.positions.values() if pos.symbol == symbol]

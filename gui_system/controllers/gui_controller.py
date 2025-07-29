@@ -802,7 +802,7 @@ class MockDataGenerator:
         return [
             {
                 'ticket': 123456789,
-                'symbol': 'XAUUSD',
+                'symbol': 'XAUUSD.v',
                 'type': 0,  # BUY
                 'volume': 0.1,
                 'price_open': 2020.50,
@@ -815,7 +815,7 @@ class MockDataGenerator:
             },
             {
                 'ticket': 123456790,
-                'symbol': 'XAUUSD',
+                'symbol': 'XAUUSD.v',
                 'type': 1,  # SELL
                 'volume': 0.2,
                 'price_open': 2025.80,
@@ -885,7 +885,7 @@ class MockDataGenerator:
     def generate_market_data() -> Dict[str, Any]:
         """สร้างข้อมูล Market จำลอง"""
         return {
-            'symbol': 'XAUUSD',
+            'symbol': 'XAUUSD.v',
             'bid': 2022.15,
             'ask': 2022.35,
             'spread': 2.0,

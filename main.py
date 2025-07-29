@@ -110,7 +110,7 @@ def check_mt5_requirements():
            print("🔄 ตรวจสอบ XAUUSD แบบ manual...")
            
            # ตรวจสอบ XAUUSD แบบ manual
-           symbol_info = mt5.symbol_info("XAUUSD")
+           symbol_info = mt5.symbol_info("XAUUSD.v")
            if not symbol_info:
                print("❌ ไม่พบ Symbol XAUUSD")
                

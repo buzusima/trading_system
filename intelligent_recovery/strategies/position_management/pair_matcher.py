@@ -145,7 +145,7 @@ class PositionPairMatcher:
                 try:
                     position = Position(
                         ticket=pos.get('ticket', 0),
-                        symbol=pos.get('symbol', 'XAUUSD'),
+                        symbol=pos.get('symbol', 'XAUUSD.v'),
                         position_type=pos.get('type', 'BUY'),
                         volume=pos.get('volume', 0.01),
                         open_price=pos.get('price_open', 0.0),

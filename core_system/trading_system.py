@@ -612,7 +612,7 @@ class RealTradingSystem:
             equity = account_info.equity if account_info else 0
             
             # Positions count
-            positions = mt5.positions_get(symbol="XAUUSD")
+            positions = mt5.positions_get(symbol="XAUUSD.v")
             position_count = len(positions) if positions else 0
             
             self.logger.info(
@@ -644,7 +644,7 @@ class RealTradingSystem:
                 }
             
             # Positions
-            positions = mt5.positions_get(symbol="XAUUSD")
+            positions = mt5.positions_get(symbol="XAUUSD.v")
             position_count = len(positions) if positions else 0
             
             return {

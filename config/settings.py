@@ -144,7 +144,7 @@ class SystemSettings:
     
     # === CORE SYSTEM SETTINGS ===
     trading_mode: TradingMode = TradingMode.LIVE
-    symbol: str = "XAUUSD"                   # Gold เท่านั้น
+    symbol: str = "XAUUSD.v"                   # Gold เท่านั้น
     environment: str = "production"          # production, development, testing
     
     # === VOLUME & REBATE TARGETS ===

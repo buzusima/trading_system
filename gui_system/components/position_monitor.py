@@ -54,7 +54,7 @@ class PositionData:
     
     def __init__(self, position_dict: Dict[str, Any]):
         self.ticket = position_dict.get('ticket', 0)
-        self.symbol = position_dict.get('symbol', 'XAUUSD')
+        self.symbol = position_dict.get('symbol', 'XAUUSD.v')
         self.type = position_dict.get('type', 0)  # 0=BUY, 1=SELL
         self.volume = position_dict.get('volume', 0.0)
         self.price_open = position_dict.get('price_open', 0.0)
@@ -344,7 +344,7 @@ class PositionMonitorPanel:
             return [
                 {
                     'ticket': 123456789,
-                    'symbol': 'XAUUSD',
+                    'symbol': 'XAUUSD.v',
                     'type': 0,  # BUY
                     'volume': 0.1,
                     'price_open': 2020.50,
