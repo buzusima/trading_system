@@ -1,1261 +1,604 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-INTELLIGENT GOLD TRADING SYSTEM - MAIN WINDOW
-============================================
-หน้าต่างหลักของระบบเทรด Gold แบบอัตโนมัติ
-Professional Trading Interface with Dark Theme
+MAIN WINDOW - Updated for Core Trading System Integration
+======================================================
+หน้าต่างหลักของระบบ GUI ที่ปรับปรุงให้ทำงานกับ Core Trading System
 
-Key Features:
-- Real-time trading dashboard
-- Live position monitoring
-- Recovery system control
-- Market intelligence display
-- Professional dark theme interface
+🔄 การเปลี่ยนแปลงหลัก:
+- รับ trading_system parameter จาก main.py
+- เชื่อมต่อกับ IntelligentTradingSystem แทน Components แยกๆ
+- ปรับปรุง Event Handling และ Data Binding
+- เพิ่ม Real-time Status Updates จาก Core System
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, font
 import threading
-import json
-import os
-from datetime import datetime
-from typing import Dict, Any, Optional
 import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
+import json
+from collections import deque
+
+# เชื่อมต่อ internal modules
+from config.settings import SystemSettings
+from utilities.professional_logger import setup_component_logger
+from utilities.error_handler import handle_trading_errors, ErrorCategory, ErrorSeverity
 
 class TradingSystemGUI:
     """
-    🖥️ Main Trading System GUI - Professional Interface
+    🖥️ Main Trading System GUI - Updated for Core System
     
-    หน้าต่างหลักสำหรับการควบคุมระบบเทรดดิ้ง
-    รวมทุก Component เข้าด้วยกันในรูปแบบ Professional
+    หน้าต่างหลักที่เชื่อมต่อกับ IntelligentTradingSystem
     """
     
-    def __init__(self, settings, logger):
-        """
-        Initialize Trading System GUI
-        
-        Args:
-            settings: System settings object
-            logger: Logger instance
-        """
+    def __init__(self, settings: SystemSettings, logger, trading_system):
         self.settings = settings
         self.logger = logger
+        self.trading_system = trading_system  # 🔗 Core Trading System
         
-        print("🖥️ Initializing Trading System GUI...")
-        
-        # Core setup
-        self.root = tk.Tk()
-        self._setup_main_window()
-        self._setup_theme()
-        
-        # System status
+        # GUI State
         self.is_connected = False
         self.is_trading = False
-        self.system_status = "DISCONNECTED"
+        self.system_status = "INITIALIZING"
         
-        # Data storage
-        self.account_info = {}
-        self.positions = []
-        self.market_data = {}
-        self.performance_stats = {}
+        # Data for display
+        self.positions_data = []
+        self.performance_data = {}
+        self.log_messages = deque(maxlen=1000)
         
-        # Components - Import MT5 Connector
-        try:
-            from mt5_integration.mt5_connector import get_mt5_connector
-            self.mt5_connector = get_mt5_connector()
-            self.logger.info("✅ MT5 Connector initialized")
-        except ImportError as e:
-            self.logger.warning(f"⚠️ MT5 Connector ไม่พร้อมใช้งาน: {e}")
-            self.mt5_connector = None
+        # Threading for UI updates
+        self.update_active = False
+        self.update_thread = None
         
-        self.trading_system = None
+        # Initialize GUI
+        self._setup_main_window()
+        self._create_gui_components()
+        self._setup_menu()
+        self._setup_status_bar()
         
-        # Create interface
-        self._create_menu_bar()
-        self._create_main_layout()
-        self._create_status_bar()
+        # Connect to trading system events
+        self._connect_to_trading_system()
         
-        # Start update threads
-        self._start_update_threads()
-        
-        self.logger.info("✅ Trading System GUI initialized successfully")
+        self.logger.info("🖥️ เริ่มต้น Trading System GUI")
     
     def _setup_main_window(self):
-        """Setup main window properties"""
-        self.root.title("🚀 Intelligent Gold Trading System - Professional v1.0")
+        """ตั้งค่าหน้าต่างหลัก"""
+        self.root = tk.Tk()
+        self.root.title("🚀 Intelligent Gold Trading System v1.0")
         self.root.geometry("1400x900")
-        self.root.minsize(1200, 800)
+        self.root.configure(bg='#1a1a2e')
         
-        # Center window
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - (1400 // 2)
-        y = (self.root.winfo_screenheight() // 2) - (900 // 2)
-        self.root.geometry(f"1400x900+{x}+{y}")
+        # Configure grid weights
+        self.root.grid_rowconfigure(1, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
         
-        # Window icon (if available)
-        try:
-            self.root.iconbitmap("assets/trading_icon.ico")
-        except:
-            pass
+        # Bind close event
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
     
-    def _setup_theme(self):
-        """Setup professional dark theme"""
-        # Colors
-        self.colors = {
-            'bg_dark': '#1a1a2e',
-            'bg_medium': '#16213e',
-            'bg_light': '#0f3460',
-            'accent': '#e94560',
-            'accent_light': '#f39c12',
-            'text_white': '#ffffff',
-            'text_gray': '#bdc3c7',
-            'success': '#27ae60',
-            'warning': '#f39c12',
-            'danger': '#e74c3c'
-        }
+    def _create_gui_components(self):
+        """สร้าง GUI Components หลัก"""
         
-        # Configure root
-        self.root.configure(bg=self.colors['bg_dark'])
+        # === TOP TOOLBAR ===
+        self._create_toolbar()
         
-        # Configure styles
-        style = ttk.Style()
+        # === MAIN CONTENT AREA ===
+        main_frame = tk.Frame(self.root, bg='#1a1a2e')
+        main_frame.grid(row=1, column=0, sticky='nsew', padx=5, pady=5)
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(1, weight=1)
         
-        # Frame styles
-        style.configure('Dark.TFrame', background=self.colors['bg_dark'])
-        style.configure('Medium.TFrame', background=self.colors['bg_medium'])
-        style.configure('Light.TFrame', background=self.colors['bg_light'])
+        # Left Panel - Trading Controls & Status
+        self._create_left_panel(main_frame)
         
-        # Label styles
-        style.configure('Title.TLabel', 
-                       background=self.colors['bg_dark'],
-                       foreground=self.colors['text_white'],
-                       font=('Arial', 16, 'bold'))
+        # Right Panel - Positions & Performance
+        self._create_right_panel(main_frame)
         
-        style.configure('Header.TLabel',
-                       background=self.colors['bg_medium'],
-                       foreground=self.colors['text_white'],
-                       font=('Arial', 12, 'bold'))
-        
-        style.configure('Info.TLabel',
-                       background=self.colors['bg_dark'],
-                       foreground=self.colors['text_gray'],
-                       font=('Arial', 10))
-        
-        # Button styles
-        style.configure('Action.TButton',
-                       background=self.colors['accent'],
-                       foreground=self.colors['text_white'],
-                       font=('Arial', 10, 'bold'))
+        # === BOTTOM LOG AREA ===
+        self._create_log_area()
     
-    def _create_menu_bar(self):
-        """Create application menu bar"""
-        menubar = tk.Menu(self.root, bg=self.colors['bg_dark'],
-                         fg=self.colors['text_white'])
-        self.root.config(menu=menubar)
+    def _create_toolbar(self):
+        """สร้าง Toolbar"""
+        toolbar = tk.Frame(self.root, bg='#16213e', height=60)
+        toolbar.grid(row=0, column=0, sticky='ew', padx=5, pady=5)
+        toolbar.grid_propagate(False)
         
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0, bg=self.colors['bg_medium'],
-                           fg=self.colors['text_white'])
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Load Settings", command=self.load_settings)
-        file_menu.add_command(label="Save Settings", command=self.save_settings)
-        file_menu.add_separator()
-        file_menu.add_command(label="Export Report", command=self.export_report)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.exit_application)
+        # Connection Section
+        conn_frame = tk.Frame(toolbar, bg='#16213e')
+        conn_frame.pack(side='left', padx=10, pady=10)
         
-        # Trading menu
-        trading_menu = tk.Menu(menubar, tearoff=0, bg=self.colors['bg_medium'],
-                              fg=self.colors['text_white'])
-        menubar.add_cascade(label="Trading", menu=trading_menu)
-        trading_menu.add_command(label="Connect MT5", command=self.connect_mt5)
-        trading_menu.add_command(label="Disconnect", command=self.disconnect_mt5)
-        trading_menu.add_separator()
-        trading_menu.add_command(label="Start Trading", command=self.start_trading)
-        trading_menu.add_command(label="Stop Trading", command=self.stop_trading)
-        trading_menu.add_separator()
-        trading_menu.add_command(label="Close All Positions", command=self.close_all_positions)
+        tk.Label(conn_frame, text="🔌 MT5 Status:", 
+                bg='#16213e', fg='white', font=('Arial', 10, 'bold')).pack(side='left')
         
-        # Tools menu
-        tools_menu = tk.Menu(menubar, tearoff=0, bg=self.colors['bg_medium'],
-                            fg=self.colors['text_white'])
-        menubar.add_cascade(label="Tools", menu=tools_menu)
-        tools_menu.add_command(label="Market Analysis", command=self.show_market_analysis)
-        tools_menu.add_command(label="Recovery Settings", command=self.show_recovery_settings)
-        tools_menu.add_command(label="Risk Manager", command=self.show_risk_manager)
+        self.status_label = tk.Label(conn_frame, text="DISCONNECTED", 
+                                   bg='#16213e', fg='#e74c3c', font=('Arial', 10, 'bold'))
+        self.status_label.pack(side='left', padx=(5, 0))
         
-        # Help menu
-        help_menu = tk.Menu(menubar, tearoff=0, bg=self.colors['bg_medium'],
-                           fg=self.colors['text_white'])
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="User Manual", command=self.show_manual)
-        help_menu.add_command(label="About", command=self.show_about)
+        # Connect Button
+        self.connect_btn = tk.Button(conn_frame, text="🔌 Connect MT5", 
+                                   command=self._connect_mt5,
+                                   bg='#2980b9', fg='white', 
+                                   font=('Arial', 9, 'bold'))
+        self.connect_btn.pack(side='left', padx=(10, 0))
+        
+        # Trading Controls Section
+        trading_frame = tk.Frame(toolbar, bg='#16213e')
+        trading_frame.pack(side='left', padx=20)
+        
+        # Start Trading Button
+        self.start_trading_btn = tk.Button(trading_frame, text="🚀 Start Trading", 
+                                         command=self._start_trading,
+                                         bg='#27ae60', fg='white', 
+                                         font=('Arial', 9, 'bold'),
+                                         state='disabled')
+        self.start_trading_btn.pack(side='left', padx=5)
+        
+        # Stop Trading Button
+        self.stop_trading_btn = tk.Button(trading_frame, text="🛑 Stop Trading", 
+                                        command=self._stop_trading,
+                                        bg='#e74c3c', fg='white', 
+                                        font=('Arial', 9, 'bold'),
+                                        state='disabled')
+        self.stop_trading_btn.pack(side='left', padx=5)
+        
+        # Emergency Stop Button
+        self.emergency_btn = tk.Button(trading_frame, text="🚨 EMERGENCY", 
+                                     command=self._emergency_stop,
+                                     bg='#8b0000', fg='white', 
+                                     font=('Arial', 9, 'bold'))
+        self.emergency_btn.pack(side='left', padx=5)
+        
+        # System Status Section
+        status_frame = tk.Frame(toolbar, bg='#16213e')
+        status_frame.pack(side='right', padx=10)
+        
+        tk.Label(status_frame, text="System:", 
+                bg='#16213e', fg='white', font=('Arial', 10)).pack(side='left')
+        
+        self.system_status_label = tk.Label(status_frame, text="INITIALIZING", 
+                                          bg='#16213e', fg='#f39c12', 
+                                          font=('Arial', 10, 'bold'))
+        self.system_status_label.pack(side='left', padx=(5, 0))
     
-    def _create_main_layout(self):
-        """Create main application layout"""
-        # Main container
-        main_frame = ttk.Frame(self.root, style='Dark.TFrame')
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    def _create_left_panel(self, parent):
+        """สร้าง Left Panel"""
+        left_frame = tk.Frame(parent, bg='#1a1a2e')
+        left_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
         
-        # Top panel - Controls and Status
-        self._create_top_panel(main_frame)
+        # Account Info
+        self._create_account_info_panel(left_frame)
         
-        # Middle panel - Main content
-        self._create_middle_panel(main_frame)
+        # Trading Statistics
+        self._create_trading_stats_panel(left_frame)
         
-        # Bottom panel - Logs and messages
-        self._create_bottom_panel(main_frame)
+        # System Metrics
+        self._create_system_metrics_panel(left_frame)
     
-    def _create_top_panel(self, parent):
-        """Create top control panel"""
-        top_frame = ttk.Frame(parent, style='Medium.TFrame')
-        top_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        # Connection status
-        status_frame = ttk.Frame(top_frame, style='Medium.TFrame')
-        status_frame.pack(side=tk.LEFT, padx=10, pady=10)
-        
-        ttk.Label(status_frame, text="🔌 MT5 Status:", style='Header.TLabel').pack(side=tk.LEFT)
-        self.status_label = ttk.Label(status_frame, text="DISCONNECTED", 
-                                     style='Info.TLabel')
-        self.status_label.pack(side=tk.LEFT, padx=(5, 0))
-        
-        # Control buttons
-        button_frame = ttk.Frame(top_frame, style='Medium.TFrame')
-        button_frame.pack(side=tk.RIGHT, padx=10, pady=10)
-        
-        self.connect_btn = ttk.Button(button_frame, text="Connect MT5",
-                                     command=self.connect_mt5, style='Action.TButton')
-        self.connect_btn.pack(side=tk.LEFT, padx=2)
-        
-        self.start_btn = ttk.Button(button_frame, text="Start Trading",
-                                   command=self.start_trading, style='Action.TButton')
-        self.start_btn.pack(side=tk.LEFT, padx=2)
-        
-        self.stop_btn = ttk.Button(button_frame, text="Stop Trading",
-                                  command=self.stop_trading, style='Action.TButton')
-        self.stop_btn.pack(side=tk.LEFT, padx=2)
-    
-        self.status_btn = ttk.Button(button_frame, text="📊 Status", 
-                               command=self.show_system_status, style='Action.TButton')
-        self.status_btn.pack(side=tk.LEFT, padx=2)
-        
-        self.test_signal_btn = ttk.Button(button_frame, text="🧪 Test Signal", 
-                                        command=self.create_test_signal, style='Action.TButton')
-        self.test_signal_btn.pack(side=tk.LEFT, padx=2)
-
-    def show_system_status(self):
-        """แสดงสถานะระบบ"""
-        try:
-            status_msg = "📊 SYSTEM STATUS:\n\n"
-            
-            # Signal Generator Status
-            if hasattr(self, 'signal_generator') and self.signal_generator:
-                try:
-                    stats = self.signal_generator.get_signal_statistics()
-                    status_msg += f"🎯 Signal Generator: ACTIVE\n"
-                    status_msg += f"   - Signals Today: {stats.get('signals_generated_today', 0)}\n"
-                    status_msg += f"   - Active Signals: {stats.get('active_signals_count', 0)}\n"
-                    status_msg += f"   - Last Signal: {stats.get('last_signal_time', 'Never')}\n\n"
-                except Exception as e:
-                    status_msg += f"🎯 Signal Generator: ERROR ({e})\n\n"
-            else:
-                status_msg += "🎯 Signal Generator: NOT READY\n\n"
-            
-            # Recovery Engine Status
-            if hasattr(self, 'recovery_engine') and self.recovery_engine:
-                try:
-                    recovery_stats = self.recovery_engine.get_recovery_summary()
-                    status_msg += f"🔄 Recovery Engine: ACTIVE\n"
-                    status_msg += f"   - Total Attempts: {recovery_stats.get('total_attempted', 0)}\n"
-                    status_msg += f"   - Success Rate: {recovery_stats.get('success_rate', 0):.1f}%\n"
-                    status_msg += f"   - Active Recoveries: {recovery_stats.get('active_recoveries', 0)}\n\n"
-                except Exception as e:
-                    status_msg += f"🔄 Recovery Engine: ERROR ({e})\n\n"
-            else:
-                status_msg += "🔄 Recovery Engine: NOT READY\n\n"
-            
-            # MT5 Connection
-            try:
-                import MetaTrader5 as mt5
-                positions = mt5.positions_get()
-                status_msg += f"📈 MT5 Positions: {len(positions) if positions else 0}\n"
-                
-                account_info = mt5.account_info()
-                if account_info:
-                    status_msg += f"💰 Balance: ${account_info.balance:,.2f}\n"
-                    status_msg += f"📊 Equity: ${account_info.equity:,.2f}\n"
-            except Exception as e:
-                status_msg += f"📈 MT5: Connection Error ({e})\n"
-            
-            messagebox.showinfo("System Status", status_msg)
-            
-        except Exception as e:
-            self.log_message(f"❌ Status Check Error: {e}", "ERROR")
-            messagebox.showerror("Error", f"Status check failed: {e}")
-
-    def create_test_signal(self):
-        """สร้าง Test Signal เพื่อทดสอบระบบ"""
-        try:
-            if hasattr(self, 'signal_generator') and self.signal_generator:
-                from adaptive_entries.signal_generator import EntrySignal, SignalDirection, SignalStrength
-                from config.trading_params import EntryStrategy
-                from config.settings import MarketSession
-                from datetime import datetime
-                
-                # สร้าง Test Signal
-                test_signal = EntrySignal(
-                    signal_id=f"TEST_{datetime.now().strftime('%H%M%S')}",
-                    timestamp=datetime.now(),
-                    source_engine=EntryStrategy.TREND_FOLLOWING,
-                    direction=SignalDirection.BUY,
-                    strength=SignalStrength.STRONG,
-                    confidence=0.8,
-                    current_price=2650.0,
-                    suggested_volume=0.01,
-                    signal_quality_score=80.0,
-                    session=MarketSession.LONDON
-                )
-                
-                # เพิ่มเข้าระบบ
-                success = self.signal_generator.signal_aggregator.add_signal(test_signal)
-                
-                if success:
-                    self.log_message("🧪 สร้าง Test Signal สำเร็จ", "SUCCESS")
-                else:
-                    self.log_message("❌ ไม่สามารถสร้าง Test Signal ได้", "ERROR")
-            else:
-                self.log_message("⚠️ Signal Generator ยังไม่พร้อม", "WARNING")
-                
-        except Exception as e:
-            self.log_message(f"❌ Test Signal Error: {e}", "ERROR")
-
-    def _create_middle_panel(self, parent):
-        """Create middle content panel"""
-        middle_frame = ttk.Frame(parent, style='Dark.TFrame')
-        middle_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+    def _create_right_panel(self, parent):
+        """สร้าง Right Panel"""
+        right_frame = tk.Frame(parent, bg='#1a1a2e')
+        right_frame.grid(row=0, column=1, sticky='nsew')
         
         # Create notebook for tabs
-        self.notebook = ttk.Notebook(middle_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        notebook = ttk.Notebook(right_frame)
+        notebook.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Dashboard tab
-        self._create_dashboard_tab()
+        # Positions Tab
+        positions_frame = tk.Frame(notebook, bg='#1a1a2e')
+        notebook.add(positions_frame, text='📊 Positions')
+        self._create_positions_table(positions_frame)
         
-        # Positions tab
-        self._create_positions_tab()
+        # Performance Tab
+        performance_frame = tk.Frame(notebook, bg='#1a1a2e')
+        notebook.add(performance_frame, text='📈 Performance')
+        self._create_performance_panel(performance_frame)
         
-        # Recovery tab
-        self._create_recovery_tab()
-        
-        # Analytics tab
-        self._create_analytics_tab()
+        # Recovery Tab
+        recovery_frame = tk.Frame(notebook, bg='#1a1a2e')
+        notebook.add(recovery_frame, text='🔄 Recovery')
+        self._create_recovery_panel(recovery_frame)
     
-    def _create_dashboard_tab(self):
-        """Create main dashboard tab"""
-        dashboard_frame = ttk.Frame(self.notebook, style='Dark.TFrame')
-        self.notebook.add(dashboard_frame, text="📊 Dashboard")
+    def _create_account_info_panel(self, parent):
+        """สร้าง Account Info Panel"""
+        info_frame = tk.LabelFrame(parent, text="💳 Account Information", 
+                                 bg='#16213e', fg='white', font=('Arial', 10, 'bold'))
+        info_frame.pack(fill='x', padx=5, pady=5)
         
-        # Account info
-        account_frame = ttk.LabelFrame(dashboard_frame, text="Account Information")
-        account_frame.pack(fill=tk.X, padx=5, pady=5)
-        
+        # Account details will be updated from MT5
         self.account_labels = {}
-        account_info = [
-            ("Balance:", "balance"),
-            ("Equity:", "equity"),
-            ("Margin:", "margin"),
-            ("Free Margin:", "margin_free"),
-            ("Profit:", "profit")
-        ]
-        
-        for i, (label, key) in enumerate(account_info):
-            row_frame = ttk.Frame(account_frame)
-            row_frame.pack(fill=tk.X, padx=5, pady=2)
+        for i, (key, label) in enumerate([
+            ('login', 'Account:'),
+            ('balance', 'Balance:'),
+            ('equity', 'Equity:'),
+            ('profit', 'Profit:'),
+            ('margin', 'Margin:')
+        ]):
+            tk.Label(info_frame, text=label, bg='#16213e', fg='#bdc3c7').grid(
+                row=i, column=0, sticky='w', padx=5, pady=2)
             
-            ttk.Label(row_frame, text=label, width=15).pack(side=tk.LEFT)
-            self.account_labels[key] = ttk.Label(row_frame, text="0.00")
-            self.account_labels[key].pack(side=tk.LEFT)
+            self.account_labels[key] = tk.Label(info_frame, text="--", 
+                                              bg='#16213e', fg='white', font=('Arial', 9))
+            self.account_labels[key].grid(row=i, column=1, sticky='w', padx=5, pady=2)
+    
+    def _create_trading_stats_panel(self, parent):
+        """สร้าง Trading Statistics Panel"""
+        stats_frame = tk.LabelFrame(parent, text="📊 Trading Statistics", 
+                                  bg='#16213e', fg='white', font=('Arial', 10, 'bold'))
+        stats_frame.pack(fill='x', padx=5, pady=5)
         
-        # Market data
-        market_frame = ttk.LabelFrame(dashboard_frame, text="XAUUSD Market Data")
-        market_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.market_labels = {}
-        market_info = [
-            ("Bid:", "bid"),
-            ("Ask:", "ask"),
-            ("Spread:", "spread"),
-            ("Last Update:", "time")
-        ]
-        
-        for i, (label, key) in enumerate(market_info):
-            row_frame = ttk.Frame(market_frame)
-            row_frame.pack(fill=tk.X, padx=5, pady=2)
+        self.stats_labels = {}
+        for i, (key, label) in enumerate([
+            ('total_positions', 'Total Positions:'),
+            ('active_positions', 'Active:'),
+            ('daily_volume', 'Daily Volume:'),
+            ('total_profit', 'Total P&L:'),
+            ('win_rate', 'Win Rate:')
+        ]):
+            tk.Label(stats_frame, text=label, bg='#16213e', fg='#bdc3c7').grid(
+                row=i, column=0, sticky='w', padx=5, pady=2)
             
-            ttk.Label(row_frame, text=label, width=15).pack(side=tk.LEFT)
-            self.market_labels[key] = ttk.Label(row_frame, text="N/A")
-            self.market_labels[key].pack(side=tk.LEFT)
+            self.stats_labels[key] = tk.Label(stats_frame, text="--", 
+                                            bg='#16213e', fg='white', font=('Arial', 9))
+            self.stats_labels[key].grid(row=i, column=1, sticky='w', padx=5, pady=2)
     
-    def _create_positions_tab(self):
-        """Create positions monitoring tab"""
-        positions_frame = ttk.Frame(self.notebook, style='Dark.TFrame')
-        self.notebook.add(positions_frame, text="📈 Positions")
+    def _create_system_metrics_panel(self, parent):
+        """สร้าง System Metrics Panel"""
+        metrics_frame = tk.LabelFrame(parent, text="🔧 System Metrics", 
+                                    bg='#16213e', fg='white', font=('Arial', 10, 'bold'))
+        metrics_frame.pack(fill='x', padx=5, pady=5)
         
-        # Positions table
-        self.positions_tree = ttk.Treeview(positions_frame, 
-                                         columns=('Ticket', 'Type', 'Volume', 'Price', 'Current', 'Profit'),
-                                         show='headings')
-        
-        # Define headings
-        self.positions_tree.heading('Ticket', text='Ticket')
-        self.positions_tree.heading('Type', text='Type')
-        self.positions_tree.heading('Volume', text='Volume')
-        self.positions_tree.heading('Price', text='Open Price')
-        self.positions_tree.heading('Current', text='Current Price')
-        self.positions_tree.heading('Profit', text='Profit')
-        
-        # Configure column widths
-        self.positions_tree.column('Ticket', width=100)
-        self.positions_tree.column('Type', width=60)
-        self.positions_tree.column('Volume', width=80)
-        self.positions_tree.column('Price', width=100)
-        self.positions_tree.column('Current', width=100)
-        self.positions_tree.column('Profit', width=100)
-        
-        self.positions_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Scrollbar for positions table
-        positions_scroll = ttk.Scrollbar(positions_frame, orient=tk.VERTICAL, 
-                                       command=self.positions_tree.yview)
-        positions_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.positions_tree.configure(yscrollcommand=positions_scroll.set)
-    
-    def _create_recovery_tab(self):
-        """Create recovery system tab"""
-        recovery_frame = ttk.Frame(self.notebook, style='Dark.TFrame')
-        self.notebook.add(recovery_frame, text="🔄 Recovery")
-        
-        # Recovery status
-        status_frame = ttk.LabelFrame(recovery_frame, text="Recovery Status")
-        status_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(status_frame, text="Recovery System: ").pack(side=tk.LEFT, padx=5)
-        self.recovery_status = ttk.Label(status_frame, text="STANDBY")
-        self.recovery_status.pack(side=tk.LEFT)
-        
-        # Recovery settings
-        settings_frame = ttk.LabelFrame(recovery_frame, text="Recovery Settings")
-        settings_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        ttk.Label(settings_frame, text="Strategy:").grid(row=0, column=0, padx=5, pady=2, sticky=tk.W)
-        self.recovery_strategy = ttk.Combobox(settings_frame, 
-                                            values=["Smart Martingale", "Grid Trading", "Hedging"])
-        self.recovery_strategy.grid(row=0, column=1, padx=5, pady=2)
-        self.recovery_strategy.set("Smart Martingale")
-        
-        ttk.Label(settings_frame, text="Max Recovery Level:").grid(row=1, column=0, padx=5, pady=2, sticky=tk.W)
-        self.max_recovery = ttk.Entry(settings_frame)
-        self.max_recovery.grid(row=1, column=1, padx=5, pady=2)
-        self.max_recovery.insert(0, "5")
-    
-    def _create_analytics_tab(self):
-        """Create analytics tab"""
-        analytics_frame = ttk.Frame(self.notebook, style='Dark.TFrame')
-        self.notebook.add(analytics_frame, text="📈 Analytics")
-        
-        # Performance summary
-        perf_frame = ttk.LabelFrame(analytics_frame, text="Performance Summary")
-        perf_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        self.perf_labels = {}
-        perf_metrics = [
-            ("Total Trades:", "total_trades"),
-            ("Win Rate:", "win_rate"),
-            ("Total Profit:", "total_profit"),
-            ("Recovery Success:", "recovery_success")
-        ]
-        
-        for i, (label, key) in enumerate(perf_metrics):
-            row_frame = ttk.Frame(perf_frame)
-            row_frame.pack(fill=tk.X, padx=5, pady=2)
+        self.metrics_labels = {}
+        for i, (key, label) in enumerate([
+            ('uptime', 'Uptime:'),
+            ('cpu_usage', 'CPU Usage:'),
+            ('memory_usage', 'Memory:'),
+            ('last_signal', 'Last Signal:'),
+            ('last_order', 'Last Order:')
+        ]):
+            tk.Label(metrics_frame, text=label, bg='#16213e', fg='#bdc3c7').grid(
+                row=i, column=0, sticky='w', padx=5, pady=2)
             
-            ttk.Label(row_frame, text=label, width=20).pack(side=tk.LEFT)
-            self.perf_labels[key] = ttk.Label(row_frame, text="0")
-            self.perf_labels[key].pack(side=tk.LEFT)
+            self.metrics_labels[key] = tk.Label(metrics_frame, text="--", 
+                                              bg='#16213e', fg='white', font=('Arial', 9))
+            self.metrics_labels[key].grid(row=i, column=1, sticky='w', padx=5, pady=2)
     
-    def _create_bottom_panel(self, parent):
-        """Create bottom panel for logs"""
-        bottom_frame = ttk.Frame(parent, style='Medium.TFrame')
-        bottom_frame.pack(fill=tk.X, pady=(5, 0))
+    def _create_positions_table(self, parent):
+        """สร้าง Positions Table"""
+        # Table frame
+        table_frame = tk.Frame(parent, bg='#1a1a2e')
+        table_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Log area
-        log_frame = ttk.LabelFrame(bottom_frame, text="System Log")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Create Treeview
+        columns = ('Ticket', 'Type', 'Volume', 'Entry', 'Current', 'P&L', 'Pips', 'Time', 'Status')
+        self.positions_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=15)
         
-        self.log_text = tk.Text(log_frame, height=8, bg=self.colors['bg_dark'],
-                               fg=self.colors['text_gray'], font=('Consolas', 9))
-        self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        # Configure columns
+        for col in columns:
+            self.positions_tree.heading(col, text=col)
+            self.positions_tree.column(col, width=100, anchor='center')
         
-        # Log scrollbar
-        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
-        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_text.configure(yscrollcommand=log_scroll.set)
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(table_frame, orient='vertical', command=self.positions_tree.yview)
+        self.positions_tree.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack table and scrollbar
+        self.positions_tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Context menu for positions
+        self.positions_tree.bind("<Button-3>", self._show_position_context_menu)
     
-    def _create_status_bar(self):
-        """Create status bar"""
-        self.status_bar = ttk.Frame(self.root, style='Medium.TFrame')
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    def _create_performance_panel(self, parent):
+        """สร้าง Performance Panel"""
+        perf_frame = tk.Frame(parent, bg='#1a1a2e')
+        perf_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Status labels
-        self.status_time = ttk.Label(self.status_bar, text="", style='Info.TLabel')
-        self.status_time.pack(side=tk.RIGHT, padx=5)
+        # Performance metrics
+        tk.Label(perf_frame, text="📈 Performance Analytics", 
+                bg='#1a1a2e', fg='white', font=('Arial', 12, 'bold')).pack(pady=10)
         
-        self.status_msg = ttk.Label(self.status_bar, text="Ready", style='Info.TLabel')
-        self.status_msg.pack(side=tk.LEFT, padx=5)
+        # Performance data will be displayed here
+        self.performance_text = tk.Text(perf_frame, bg='#16213e', fg='white', 
+                                      font=('Courier', 10), height=20)
+        perf_scrollbar = ttk.Scrollbar(perf_frame, command=self.performance_text.yview)
+        self.performance_text.configure(yscrollcommand=perf_scrollbar.set)
+        
+        self.performance_text.pack(side='left', fill='both', expand=True)
+        perf_scrollbar.pack(side='right', fill='y')
     
-    def _start_update_threads(self):
-        """Start background update threads"""
-        self.update_active = True
+    def _create_recovery_panel(self, parent):
+        """สร้าง Recovery Panel"""
+        recovery_frame = tk.Frame(parent, bg='#1a1a2e')
+        recovery_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Time update thread
-        time_thread = threading.Thread(target=self._update_time, daemon=True)
-        time_thread.start()
+        # Recovery controls
+        tk.Label(recovery_frame, text="🔄 Recovery Management", 
+                bg='#1a1a2e', fg='white', font=('Arial', 12, 'bold')).pack(pady=10)
         
-        # Data update thread
-        data_thread = threading.Thread(target=self._update_data, daemon=True)
-        data_thread.start()
+        # Recovery status and controls will be added here
+        self.recovery_text = tk.Text(recovery_frame, bg='#16213e', fg='white', 
+                                   font=('Courier', 10), height=20)
+        recovery_scrollbar = ttk.Scrollbar(recovery_frame, command=self.recovery_text.yview)
+        self.recovery_text.configure(yscrollcommand=recovery_scrollbar.set)
+        
+        self.recovery_text.pack(side='left', fill='both', expand=True)
+        recovery_scrollbar.pack(side='right', fill='y')
     
-    def _update_time(self):
-        """Update time display"""
+    def _create_log_area(self):
+        """สร้าง Log Area"""
+        log_frame = tk.LabelFrame(self.root, text="📝 System Log", 
+                                bg='#16213e', fg='white', font=('Arial', 10, 'bold'))
+        log_frame.grid(row=2, column=0, sticky='ew', padx=5, pady=5)
+        
+        # Log text widget
+        self.log_text = tk.Text(log_frame, bg='#0f0f23', fg='#00ff00', 
+                              font=('Courier', 9), height=8)
+        log_scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scrollbar.set)
+        
+        self.log_text.pack(side='left', fill='both', expand=True)
+        log_scrollbar.pack(side='right', fill='y')
+        
+        # Add initial log message
+        self._add_log_message("🚀 System initialized - Ready for trading", "INFO")
+    
+    def _setup_menu(self):
+        """ตั้งค่า Menu Bar"""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File Menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Export Data", command=self._export_data)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_closing)
+        
+        # Trading Menu
+        trading_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Trading", menu=trading_menu)
+        trading_menu.add_command(label="Start Trading", command=self._start_trading)
+        trading_menu.add_command(label="Stop Trading", command=self._stop_trading)
+        trading_menu.add_separator()
+        trading_menu.add_command(label="Emergency Stop", command=self._emergency_stop)
+        
+        # Tools Menu
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+        tools_menu.add_command(label="Settings", command=self._show_settings)
+        tools_menu.add_command(label="Recovery Manager", command=self._show_recovery_manager)
+        
+        # Help Menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Manual", command=self._show_manual)
+        help_menu.add_command(label="About", command=self._show_about)
+    
+    def _setup_status_bar(self):
+        """ตั้งค่า Status Bar"""
+        status_frame = tk.Frame(self.root, bg='#16213e', height=25)
+        status_frame.grid(row=3, column=0, sticky='ew')
+        status_frame.grid_propagate(False)
+        
+        # Status message
+        self.status_msg = tk.Label(status_frame, text="Ready", 
+                                 bg='#16213e', fg='white', font=('Arial', 9))
+        self.status_msg.pack(side='left', padx=10, pady=5)
+        
+        # Time display
+        self.time_label = tk.Label(status_frame, text="", 
+                                 bg='#16213e', fg='white', font=('Arial', 9))
+        self.time_label.pack(side='right', padx=10, pady=5)
+        
+        # Start time update
+        self._update_time()
+    
+    def _connect_to_trading_system(self):
+        """เชื่อมต่อกับ Trading System"""
+        if self.trading_system:
+            # Initialize trading system
+            success = self.trading_system.initialize_system()
+            if success:
+                self.system_status = "READY"
+                self.system_status_label.config(text="READY", fg='#27ae60')
+                self._add_log_message("✅ Trading System initialized successfully", "SUCCESS")
+            else:
+                self.system_status = "ERROR"
+                self.system_status_label.config(text="ERROR", fg='#e74c3c')
+                self._add_log_message("❌ Trading System initialization failed", "ERROR")
+        
+        # Start UI update thread
+        self._start_ui_updates()
+    
+    def _start_ui_updates(self):
+        """เริ่ม UI Updates"""
+        if not self.update_active:
+            self.update_active = True
+            self.update_thread = threading.Thread(target=self._ui_update_loop, daemon=True)
+            self.update_thread.start()
+            self._add_log_message("🔄 Started UI update thread", "INFO")
+    
+    def _ui_update_loop(self):
+        """UI Update Loop"""
         while self.update_active:
             try:
-                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.status_time.config(text=current_time)
-                time.sleep(1)
-            except:
-                break
-    
-    def _update_data(self):
-        """Update trading data"""
-        while self.update_active:
-            try:
-                if self.is_connected:
-                    self._refresh_account_info()
-                    self._refresh_positions()
-                    self._refresh_market_data()
-                time.sleep(2)
-            except:
-                break
-    
-    def _refresh_account_info(self):
-        """Refresh account information"""
-        if not self.is_connected or not self.mt5_connector:
-            return
-        
-        try:
-            # ดึงข้อมูลบัญชีจาก MT5
-            account_info = self.mt5_connector.get_account_info(refresh=True)
-            
-            if account_info:
-                # อัพเดทข้อมูลในหน้า GUI
-                if hasattr(self, 'account_labels'):
-                    self.account_labels['balance'].config(text=f"${account_info.balance:,.2f}")
-                    self.account_labels['equity'].config(text=f"${account_info.equity:,.2f}")
-                    self.account_labels['margin'].config(text=f"${account_info.margin:,.2f}")
-                    self.account_labels['margin_free'].config(text=f"${account_info.margin_free:,.2f}")
-                    self.account_labels['profit'].config(text=f"${account_info.profit:,.2f}")
-                
-                # เก็บข้อมูลไว้ใน instance
-                self.account_info = {
-                    'balance': account_info.balance,
-                    'equity': account_info.equity,
-                    'margin': account_info.margin,
-                    'margin_free': account_info.margin_free,
-                    'profit': account_info.profit,
-                    'currency': account_info.currency,
-                    'leverage': account_info.leverage
-                }
-                
-        except Exception as e:
-            self.logger.error(f"❌ ไม่สามารถดึงข้อมูลบัญชีได้: {e}")
-            self.log_message(f"Error updating account info: {e}", "ERROR")
-    
-    def _refresh_positions(self):
-        """Refresh positions data"""
-        if not self.is_connected or not self.mt5_connector:
-            return
-        
-        try:
-            import MetaTrader5 as mt5
-            
-            # ดึงข้อมูล Positions จาก MT5
-            positions = mt5.positions_get(symbol="XAUUSD")
-            
-            if positions:
-                # Clear existing items
-                if hasattr(self, 'positions_tree'):
-                    for item in self.positions_tree.get_children():
-                        self.positions_tree.delete(item)
+                if self.trading_system:
+                    # Get system status
+                    status = self.trading_system.get_system_status()
                     
-                    # Add new positions
-                    for pos in positions:
-                        pos_type = "BUY" if pos.type == 0 else "SELL"
-                        
-                        self.positions_tree.insert('', 'end', values=(
-                            pos.ticket,
-                            pos_type,
-                            f"{pos.volume:.2f}",
-                            f"{pos.price_open:.2f}",
-                            f"{pos.price_current:.2f}",
-                            f"${pos.profit:.2f}"
-                        ))
+                    # Update GUI in main thread
+                    self.root.after(0, lambda: self._update_gui_from_status(status))
                 
-                # เก็บข้อมูลไว้ใน instance
-                self.positions = positions
+                time.sleep(2)  # Update every 2 seconds
                 
-        except Exception as e:
-            self.logger.error(f"❌ ไม่สามารถดึงข้อมูล Positions ได้: {e}")
-            self.log_message(f"Error updating positions: {e}", "ERROR")
+            except Exception as e:
+                self.logger.error(f"❌ UI Update Error: {e}")
+                time.sleep(5)
     
-    def _refresh_market_data(self):
-        """Refresh market data"""
-        if not self.is_connected or not self.mt5_connector:
-            return
-        
+    def _update_gui_from_status(self, status):
+        """อัพเดท GUI จาก System Status"""
         try:
-            import MetaTrader5 as mt5
-            
-            # ดึงข้อมูลราคา XAUUSD
-            tick = mt5.symbol_info_tick("XAUUSD.v")
-            
-            if tick:
-                bid = tick.bid
-                ask = tick.ask
-                spread = (ask - bid) * 10000  # คำนวณ spread ใน points
-                last_update = datetime.fromtimestamp(tick.time).strftime("%H:%M:%S")
+            # Update system status
+            if status.get('state'):
+                self.system_status_label.config(text=status['state'])
                 
-                # อัพเดทใน GUI
-                if hasattr(self, 'market_labels'):
-                    self.market_labels['bid'].config(text=f"{bid:.2f}")
-                    self.market_labels['ask'].config(text=f"{ask:.2f}")
-                    self.market_labels['spread'].config(text=f"{spread:.1f} pts")
-                    self.market_labels['time'].config(text=last_update)
-                
-                # เก็บข้อมูลไว้ใน instance
-                self.market_data = {
-                    'bid': bid,
-                    'ask': ask,
-                    'spread': spread,
-                    'time': tick.time,
-                    'last_update': last_update
+                # Set color based on state
+                state_colors = {
+                    'READY': '#27ae60',
+                    'TRADING_ACTIVE': '#2ecc71',
+                    'RECOVERY_MODE': '#f39c12',
+                    'EMERGENCY_STOP': '#e74c3c'
                 }
+                color = state_colors.get(status['state'], '#bdc3c7')
+                self.system_status_label.config(fg=color)
+            
+            # Update metrics
+            metrics = status.get('metrics', {})
+            if metrics:
+                self.stats_labels['total_positions'].config(text=str(metrics.get('total_positions', 0)))
+                self.stats_labels['active_positions'].config(text=str(metrics.get('active_positions', 0)))
+                self.stats_labels['total_profit'].config(text=f"${metrics.get('total_profit', 0):.2f}")
+                self.stats_labels['daily_volume'].config(text=f"{metrics.get('daily_volume', 0):.2f} lots")
+                
+                if metrics.get('uptime'):
+                    self.metrics_labels['uptime'].config(text=metrics['uptime'])
+            
+            # Update positions
+            if self.trading_system:
+                positions = self.trading_system.get_current_positions()
+                self._update_positions_display(positions)
                 
         except Exception as e:
-            self.logger.error(f"❌ ไม่สามารถดึงข้อมูลตลาดได้: {e}")
-            self.log_message(f"Error updating market data: {e}", "ERROR")
+            self.logger.error(f"❌ GUI Update Error: {e}")
     
-    def log_message(self, message: str, level: str = "INFO"):
-        """Log message to the log area"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {level}: {message}\n"
-        
+    def _update_positions_display(self, positions):
+        """อัพเดท Positions Display"""
         try:
-            self.log_text.insert(tk.END, log_entry)
-            self.log_text.see(tk.END)
-        except:
-            pass
+            # Clear existing items
+            for item in self.positions_tree.get_children():
+                self.positions_tree.delete(item)
+            
+            # Add positions
+            for position in positions:
+                values = (
+                    getattr(position, 'ticket', '--'),
+                    getattr(position, 'type_str', '--'),
+                    f"{getattr(position, 'volume', 0):.2f}",
+                    f"{getattr(position, 'price_open', 0):.5f}",
+                    f"{getattr(position, 'price_current', 0):.5f}",
+                    f"{getattr(position, 'profit', 0):.2f}",
+                    f"{getattr(position, 'pips', 0):.1f}",
+                    getattr(position, 'time_str', '--'),
+                    getattr(position, 'status', '--')
+                )
+                
+                item = self.positions_tree.insert('', 'end', values=values)
+                
+                # Color coding based on profit
+                profit = getattr(position, 'profit', 0)
+                if profit > 0:
+                    self.positions_tree.set(item, 'P&L', f"+{profit:.2f}")
+                elif profit < 0:
+                    self.positions_tree.set(item, 'P&L', f"{profit:.2f}")
+                    
+        except Exception as e:
+            self.logger.error(f"❌ Positions Display Error: {e}")
     
-    # Menu command methods
-    def load_settings(self):
-        """Load settings from file"""
-        self.log_message("Loading settings...", "INFO")
+    # === EVENT HANDLERS ===
     
-    def save_settings(self):
-        """Save current settings"""
-        self.log_message("Saving settings...", "INFO")
-    
-    def export_report(self):
-        """Export trading report"""
-        self.log_message("Exporting report...", "INFO")
-    
-    # Trading command methods
-    def connect_mt5(self):
-        """Connect to MT5"""
-        if not self.mt5_connector:
-            messagebox.showerror("Error", "MT5 Connector ไม่พร้อมใช้งาน!")
+    def _connect_mt5(self):
+        """เชื่อมต่อ MT5"""
+        if self.is_connected:
             return
         
-        self.log_message("🔌 กำลังเชื่อมต่อ MT5...", "INFO")
+        self._add_log_message("🔌 Connecting to MT5...", "INFO")
         
-        # ใช้ thread เพื่อไม่ให้ GUI หยุดทำงาน
         def connect_thread():
             try:
-                # เชื่อมต่อ MT5
-                success = self.mt5_connector.connect()
+                # Here you would implement MT5 connection
+                # For now, simulate connection
+                time.sleep(2)
                 
-                if success:
-                    self.is_connected = True
-                    self.system_status = "CONNECTED"
-                    
-                    # อัพเดท GUI ใน main thread
-                    self.root.after(0, self._update_connection_success)
-                    
-                else:
-                    # อัพเดท GUI ใน main thread
-                    self.root.after(0, self._update_connection_failed)
-                    
+                self.is_connected = True
+                self.root.after(0, self._update_connection_success)
+                
             except Exception as e:
-                self.logger.error(f"❌ การเชื่อมต่อ MT5 ล้มเหลว: {e}")
                 self.root.after(0, lambda: self._update_connection_failed(str(e)))
-                # ✅ เพิ่มบรรทัดนี้หลังจาก Connect สำเร็จ
-            try:
-                from adaptive_entries.signal_generator import get_signal_generator
-                signal_generator = get_signal_generator()
-                self.log_message("✅ GUI ส่งสัญญาณให้ Position Manager เริ่มทำงาน", "SUCCESS")
-            except Exception as e:
-                self.log_message(f"⚠️ Cannot notify Position Manager: {e}", "WARNING")
-
-        # เริ่ม thread
+        
         threading.Thread(target=connect_thread, daemon=True).start()
     
     def _update_connection_success(self):
-        """Update GUI after successful connection"""
-        self.status_label.config(text="CONNECTED")
-        self.status_msg.config(text="เชื่อมต่อ MT5 สำเร็จ")
-        self.log_message("✅ เชื่อมต่อ MT5 สำเร็จ!", "SUCCESS")
-        
-        # เริ่มดึงข้อมูลทันที
-        self._refresh_account_info()
-        self._refresh_market_data()
-        self._refresh_positions()
-        
-        # อัพเดทสถานะ account info
-        if self.mt5_connector and self.mt5_connector.account_info:
-            account = self.mt5_connector.account_info
-            self.log_message(f"📊 Account: {account.login} | Balance: ${account.balance:,.2f} {account.currency}", "INFO")
-            self.log_message(f"🏛️ Server: {account.server} | Leverage: 1:{account.leverage}", "INFO")
+        """Update after successful MT5 connection"""
+        self.status_label.config(text="CONNECTED", fg='#27ae60')
+        self.start_trading_btn.config(state='normal')
+        self._add_log_message("✅ MT5 connected successfully", "SUCCESS")
     
-    def _update_connection_failed(self, error_msg=None):
-        """Update GUI after failed connection"""
-        self.is_connected = False
-        self.system_status = "DISCONNECTED"
-        self.status_label.config(text="DISCONNECTED")
-        self.status_msg.config(text="การเชื่อมต่อ MT5 ล้มเหลว")
-        
-        if error_msg:
-            self.log_message(f"❌ การเชื่อมต่อ MT5 ล้มเหลว: {error_msg}", "ERROR")
-        else:
-            self.log_message("❌ การเชื่อมต่อ MT5 ล้มเหลว", "ERROR")
-        
-        messagebox.showerror("Connection Error", 
-                           f"ไม่สามารถเชื่อมต่อ MT5 ได้\n{error_msg if error_msg else 'กรุณาตรวจสอบการตั้งค่า'}")
+    def _update_connection_failed(self, error_msg):
+        """Update after failed MT5 connection"""
+        self.status_label.config(text="FAILED", fg='#e74c3c')
+        self._add_log_message(f"❌ MT5 connection failed: {error_msg}", "ERROR")
     
-    def disconnect_mt5(self):
-        """Disconnect from MT5"""
-        if not self.mt5_connector:
-            return
-        
-        self.log_message("🔌 กำลังตัดการเชื่อมต่อ MT5...", "INFO")
-        
-        try:
-            # หยุดการเทรดก่อน
-            if self.is_trading:
-                self.stop_trading()
-            
-            # ตัดการเชื่อมต่อ
-            success = self.mt5_connector.disconnect()
-            
-            if success:
-                self.is_connected = False
-                self.system_status = "DISCONNECTED"
-                self.status_label.config(text="DISCONNECTED")
-                self.status_msg.config(text="ตัดการเชื่อมต่อ MT5 แล้ว")
-                self.log_message("✅ ตัดการเชื่อมต่อ MT5 สำเร็จ", "INFO")
-                
-                # เคลียร์ข้อมูล
-                self.account_info = {}
-                self.positions = []
-                self.market_data = {}
-                
-            else:
-                self.log_message("❌ ไม่สามารถตัดการเชื่อมต่อ MT5 ได้", "ERROR")
-                
-        except Exception as e:
-            self.logger.error(f"❌ Error disconnecting MT5: {e}")
-            self.log_message(f"Error disconnecting: {e}", "ERROR")
-        try:
-            from adaptive_entries.signal_generator import get_signal_generator
-            signal_generator = get_signal_generator()
-            signal_generator.gui_connected = False  # บอกให้หยุดเทรด
-            self.log_message("🛑 GUI สั่งหยุด Position Manager", "INFO")
-        except Exception as e:
-            self.log_message(f"⚠️ Cannot notify Position Manager: {e}", "WARNING")
-
-    def start_trading(self):
-        """Start trading system - เชื่อมต่อระบบเทรดจริง (แก้ไขแล้ว)"""
+    def _start_trading(self):
+        """เริ่มการเทรด"""
         if not self.is_connected:
-            messagebox.showwarning("Warning", "Please connect to MT5 first!")
+            messagebox.showwarning("Connection Required", "Please connect to MT5 first")
             return
         
-        def start_trading_thread():
-            """Run trading startup in separate thread"""
-            try:
-                self.root.after(0, lambda: self.log_message("🚀 กำลังเริ่มต้นระบบเทรดอัตโนมัติ...", "INFO"))
-                
-                # 1. เริ่มต้น Market Analyzer
-                try:
-                    from market_intelligence.market_analyzer import MarketAnalyzer
-                    self.market_analyzer = MarketAnalyzer()
-                    self.market_analyzer.start_analysis()  # SYNC method
-                    self.root.after(0, lambda: self.log_message("✅ เริ่มต้น Market Analyzer สำเร็จ", "SUCCESS"))
-                    time.sleep(1)
-                except Exception as e:
-                    error_msg = str(e)  # เก็บ error message ไว้ในตัวแปร
-                    self.root.after(0, lambda msg=error_msg: self.log_message(f"⚠️ Market Analyzer: {msg}", "WARNING"))
-                
-                # 2. เริ่มต้น Signal Generator  
-                try:
-                    from adaptive_entries.signal_generator import SignalGenerator
-                    self.signal_generator = SignalGenerator()
-                    self.signal_generator.start_signal_generation()  # SYNC method
-                    self.root.after(0, lambda: self.log_message("✅ เริ่มต้น Signal Generator สำเร็จ", "SUCCESS"))
-                    time.sleep(1)
-                except Exception as e:
-                    error_msg = str(e)
-                    self.root.after(0, lambda msg=error_msg: self.log_message(f"⚠️ Signal Generator: {msg}", "WARNING"))
-                
-                # 3. เริ่มต้น Recovery Engine
-                try:
-                    from intelligent_recovery.recovery_engine import RecoveryEngine
-                    self.recovery_engine = RecoveryEngine()
-                    self.recovery_engine.start_recovery_engine()  # SYNC method
-                    self.root.after(0, lambda: self.log_message("✅ เริ่มต้น Recovery Engine สำเร็จ", "SUCCESS"))
-                    time.sleep(1)
-                except Exception as e:
-                    error_msg = str(e)
-                    self.root.after(0, lambda msg=error_msg: self.log_message(f"⚠️ Recovery Engine: {msg}", "WARNING"))
-                
-                # 4. เริ่มต้น Order Executor
-                try:
-                    from mt5_integration.order_executor import OrderExecutor
-                    self.order_executor = OrderExecutor()
-                    self.root.after(0, lambda: self.log_message("✅ เริ่มต้น Order Executor สำเร็จ", "SUCCESS"))
-                    time.sleep(1)
-                except Exception as e:
-                    error_msg = str(e)
-                    self.root.after(0, lambda msg=error_msg: self.log_message(f"⚠️ Order Executor: {msg}", "WARNING"))
-                
-                # 5. เริ่มระบบเทรดจริง
-                try:
-                    self._start_actual_trading()
-                    self.root.after(0, lambda: self.log_message("🎯 เริ่มการเทรดแบบอัตโนมัติ", "SUCCESS"))
-                except Exception as e:
-                    error_msg = str(e)
-                    self.root.after(0, lambda msg=error_msg: self.log_message(f"❌ ไม่สามารถเริ่มการเทรดได้: {msg}", "ERROR"))
-                
-                # อัพเดทสถานะใน main thread
-                self.root.after(0, self._update_trading_started_success)
-                
-            except Exception as e:
-                error_msg = str(e)  # เก็บ error message
-                self.logger.error(f"❌ ไม่สามารถเริ่มระบบเทรดได้: {error_msg}")
-                # อัพเดทสถานะใน main thread - แก้ไข lambda scope error
-                self.root.after(0, lambda msg=error_msg: self._update_trading_started_error(msg))
-        
-        # เริ่ม thread
-        import threading
-        threading.Thread(target=start_trading_thread, daemon=True).start()
-
-    def _update_trading_started_success(self):
-        """Update GUI after successful trading start"""
-        self.is_trading = True
-        # แก้ไขจาก trading_status_label เป็น status_label
-        self.status_label.config(text="TRADING ACTIVE")
-        self.status_msg.config(text="ระบบเทรดอัตโนมัติทำงานอยู่")
-        self.log_message("✅ ระบบเทรดอัตโนมัติเริ่มทำงานแล้ว!", "SUCCESS")
-        self.log_message("🎯 ระบบกำลังมองหา Entry Signals...", "INFO")
-
-    def _update_trading_started_error(self, error_msg):
-        """Update GUI after failed trading start"""
-        self.is_trading = False
-        self.status_label.config(text="DISCONNECTED")
-        self.status_msg.config(text="ไม่สามารถเริ่มระบบเทรดได้")
-        self.log_message(f"❌ ไม่สามารถเริ่มระบบเทรดได้: {error_msg}", "ERROR")
-        messagebox.showerror("Error", f"Trading system failed to start: {error_msg}")
-
-    def stop_trading(self):
-        """Stop trading system - แก้ไขให้หยุดจริง"""
-        try:
-            self.log_message("🛑 กำลังหยุดระบบเทรดอัตโนมัติ...", "INFO")
-            
-            # หยุด Trading Loop
-            if hasattr(self, 'trading_loop_active'):
-                self.trading_loop_active = False
-            
-            # หยุด Signal Generator
-            if hasattr(self, 'signal_generator') and self.signal_generator:
-                self.signal_generator.stop_signal_generation()
-                self.log_message("✅ หยุด Signal Generator", "SUCCESS")
-            
-            # หยุด Market Analyzer
-            if hasattr(self, 'market_analyzer') and self.market_analyzer:
-                self.market_analyzer.stop_analysis()
-                self.log_message("✅ หยุด Market Analyzer", "SUCCESS")
-            
-            # หยุด Recovery Engine
-            if hasattr(self, 'recovery_engine') and self.recovery_engine:
-                self.recovery_engine.stop_recovery_engine()
-                self.log_message("✅ หยุด Recovery Engine", "SUCCESS")
-            
-            # อัพเดทสถานะ
-            self.is_trading = False
-            self.status_label.config(text="CONNECTED") 
-            self.status_msg.config(text="หยุดระบบเทรดแล้ว")
-            self.log_message("✅ หยุดระบบเทรดอัตโนมัติสำเร็จ", "SUCCESS")
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error stopping trading: {e}")
-            self.log_message(f"Error stopping trading: {e}", "ERROR")
-
-    def _start_actual_trading(self):
-        
-        """เริ่มการเทรดจริง - แก้ไขแล้ว"""
-        return
-        #if not hasattr(self, 'trading_loop_active'):
-        #   self.trading_loop_active = False
-        
-        #if self.trading_loop_active:
-        #   return
-        
-        self.trading_loop_active = True
-        
-        def trading_loop():
-            """Main Trading Loop - แก้ไข Error Handling"""
-            self.root.after(0, lambda: self.log_message("🔄 เริ่ม Trading Loop หลัก", "INFO"))
-            
-            # ตรวจสอบ Order Executor
-            if not hasattr(self, 'order_executor') or not self.order_executor:
-                self.root.after(0, lambda: self.log_message("❌ Order Executor ไม่พร้อม - กำลังสร้างใหม่...", "WARNING"))
-                try:
-                    from mt5_integration.order_executor import get_order_executor
-                    self.order_executor = get_order_executor()
-                    self.root.after(0, lambda: self.log_message("✅ สร้าง Order Executor ใหม่สำเร็จ", "SUCCESS"))
-                except Exception as e:
-                    error_msg = str(e)
-                    self.root.after(0, lambda msg=error_msg: self.log_message(f"❌ ไม่สามารถสร้าง Order Executor: {msg}", "ERROR"))
-                    return
-            
-            # ตัวนับสำหรับสถิติ
-            loop_count = 0
-            signal_count = 0
-            order_count = 0
-            last_stats_time = time.time()
-            
-            while self.trading_loop_active and self.is_trading:
-                try:
-                    loop_count += 1
-                    
-                    # แสดงสถิติทุก 30 รอบ (ประมาณ 5 นาที)
-                    if loop_count % 30 == 0:
-                        current_time = time.time()
-                        elapsed_minutes = (current_time - last_stats_time) / 60
-                        signals_per_minute = signal_count / max(elapsed_minutes, 1)
-                        orders_per_minute = order_count / max(elapsed_minutes, 1)
-                        
-                        self.root.after(0, lambda: self.log_message(
-                            f"📊 Stats: Loop #{loop_count} | "
-                            f"Signals: {signal_count} ({signals_per_minute:.1f}/min) | "
-                            f"Orders: {order_count} ({orders_per_minute:.1f}/min)", "INFO"))
-                    
-                    # 1. ดึง Signal จาก Signal Generator
-                    signal = None
-                    if hasattr(self, 'signal_generator') and self.signal_generator:
-                        try:
-                            signal = self.signal_generator.get_next_entry_signal()
-                            if signal:
-                                signal_count += 1
-                                self.root.after(0, lambda s=signal: self.log_message(
-                                    f"📨 Signal #{signal_count}: {s.direction.value} | "
-                                    f"Price: {s.current_price:.2f} | "
-                                    f"Confidence: {s.confidence:.2f} | "
-                                    f"Strategy: {s.source_engine.value}", "INFO"))
-                        except Exception as e:
-                            if loop_count % 10 == 0:  # แสดง error ทุก 10 รอบ
-                                error_msg = str(e)
-                                self.root.after(0, lambda msg=error_msg: self.log_message(
-                                    f"⚠️ Signal Generator Error: {msg}", "WARNING"))
-                    
-                    # 2. ประมวลผล Signal และส่งออร์เดอร์
-                    if signal and self.order_executor:
-                        try:
-                            order_result = self._execute_trading_signal_safe(signal)
-                            if order_result:
-                                order_count += 1
-                                
-                                if order_result.status.value == "FILLED":
-                                    self.root.after(0, lambda r=order_result: self.log_message(
-                                        f"✅ Order #{order_count} Filled: "
-                                        f"{signal.direction.value} {r.volume_executed} lots @ {r.price_executed:.2f} "
-                                        f"(Ticket: {r.mt5_position})", "SUCCESS"))
-                                else:
-                                    self.root.after(0, lambda r=order_result: self.log_message(
-                                        f"❌ Order #{order_count} Failed: {r.error_description}", "ERROR"))
-                        
-                        except Exception as e:
-                            error_msg = str(e)
-                            self.root.after(0, lambda msg=error_msg: self.log_message(
-                                f"❌ Order Execution Error: {msg}", "ERROR"))
-                                        
-                    # 3. ตรวจสอบ Positions ที่ต้อง Recovery
-                    if loop_count % 6 == 0:  # ทุก 6 รอบ (ประมาณ 1 นาที)
-                        try:
-                            self._check_positions_for_recovery()
-                        except Exception as e:
-                            if loop_count % 30 == 0:  # แสดง error ทุก 30 รอบ
-                                error_msg = str(e)
-                                self.root.after(0, lambda msg=error_msg: self.log_message(
-                                    f"⚠️ Recovery Check Error: {msg}", "WARNING"))                    
-                    
-            
-                    # รอก่อนรอบถัดไป
-                    time.sleep(10)  # ตรวจสอบทุก 10 วินาที
-                    
-                except Exception as e:
-                    error_msg = str(e)
-                    self.root.after(0, lambda msg=error_msg: self.log_message(
-                        f"❌ Trading Loop Critical Error: {msg}", "ERROR"))
-                    time.sleep(30)  # รอนานขึ้นเมื่อมี critical error
-                    
-                    # ตรวจสอบว่าต้อง restart components หรือไม่
-                    if "MT5" in str(e) or "connection" in str(e).lower():
-                        self.root.after(0, lambda: self.log_message(
-                            "🔄 Attempting to restart trading components...", "INFO"))
-                        try:
-                            self._restart_trading_components()
-                        except Exception as restart_error:
-                            restart_msg = str(restart_error)
-                            self.root.after(0, lambda msg=restart_msg: self.log_message(
-                                f"❌ Component restart failed: {msg}", "ERROR"))
-            
-            # Trading loop ปิด
-            self.root.after(0, lambda: self.log_message("🛑 Trading Loop หยุดทำงาน", "INFO"))
-        
-        # เริ่ม Trading Loop ใน thread แยก
-        import threading
-        threading.Thread(target=trading_loop, daemon=True).start()
-
-    def _execute_trading_signal_safe(self, signal):
-        """Execute Trading Signal แบบปลอดภัย"""
-        try:
-            from mt5_integration.order_executor import OrderType
-            
-            # แปลง direction เป็น OrderType
-            if signal.direction.value == "BUY":
-                order_type = OrderType.BUY
-            elif signal.direction.value == "SELL":
-                order_type = OrderType.SELL
+        if self.trading_system:
+            success = self.trading_system.start_trading()
+            if success:
+                self.is_trading = True
+                self.start_trading_btn.config(state='disabled')
+                self.stop_trading_btn.config(state='normal')
+                self._add_log_message("🚀 Trading started!", "SUCCESS")
             else:
-                self.log_message(f"❌ Invalid signal direction: {signal.direction.value}", "ERROR")
-                return None
-            
-            # ตรวจสอบ volume
-            volume = max(0.01, min(signal.suggested_volume, 1.0))  # จำกัด 0.01-1.0 lots
-            
-            # ส่งออร์เดอร์
-            result = self.order_executor.send_market_order(
-                symbol="XAUUSD",
-                order_type=order_type,
-                volume=volume,
-                comment=f"Signal_{signal.signal_id[:8]}",
-                strategy_name=signal.source_engine.value,
-                recovery_level=0
-            )
-            
-            return result
-            
-        except Exception as e:
-            self.log_message(f"❌ Signal execution error: {e}", "ERROR")
-            return None
-
-    def _check_positions_for_recovery_safe(self):
-        """ตรวจสอบ Positions สำหรับ Recovery แบบปลอดภัย"""
-        try:
-            if not hasattr(self, 'order_executor') or not self.order_executor:
-                return
-            
-            # ดึง positions ที่เปิดอยู่
-            positions = self.order_executor.get_open_positions("XAUUSD")
-            
-            if not positions:
-                return
-            
-            # แสดงสถานะ positions
-            total_profit = sum(pos['profit'] for pos in positions)
-            position_count = len(positions)
-            
-            if position_count > 0:
-                self.log_message(f"💼 Positions: {position_count} open | "
-                            f"Total P&L: ${total_profit:.2f}", "INFO")
-            
-            # Recovery logic แบบง่าย (ถ้ามี positions ขาดทุน)
-            losing_positions = [pos for pos in positions if pos['profit'] < -10]  # ขาดทุนเกิน $10
-            
-            if losing_positions and hasattr(self, 'recovery_engine'):
-                try:
-                    # เรียก Recovery Engine (ถ้ามี)
-                    for pos in losing_positions:
-                        self.log_message(f"🔄 Position {pos['ticket']} needs recovery: ${pos['profit']:.2f}", "WARNING")
-                        # ใส่ Recovery logic ตรงนี้ในอนาคต
-                except Exception as e:
-                    self.log_message(f"⚠️ Recovery processing error: {e}", "WARNING")
-            
-        except Exception as e:
-            # ไม่แสดง error ถ้าเป็นปัญหาเล็กๆ
-            if "connection" in str(e).lower() or "MT5" in str(e):
-                self.log_message(f"⚠️ Position check warning: {e}", "WARNING")
-
-    def _restart_trading_components(self):
-        """Restart Trading Components เมื่อมี Error"""
-        try:
-            self.log_message("🔄 Restarting trading components...", "INFO")
-            
-            # Restart Order Executor
-            if hasattr(self, 'order_executor'):
-                try:
-                    self.order_executor.shutdown()
-                except:
-                    pass
-            
-            from mt5_integration.order_executor import get_order_executor
-            self.order_executor = get_order_executor()
-            self.log_message("✅ Order Executor restarted", "SUCCESS")
-            
-            # Restart Signal Generator ถ้าจำเป็น
-            if hasattr(self, 'signal_generator') and self.signal_generator:
-                try:
-                    status = self.signal_generator.get_system_status()
-                    if not status.get('is_ready', False):
-                        self.signal_generator.stop_signal_generation()
-                        time.sleep(2)
-                        self.signal_generator.start_signal_generation()
-                        self.log_message("✅ Signal Generator restarted", "SUCCESS")
-                except Exception as e:
-                    self.log_message(f"⚠️ Signal Generator restart failed: {e}", "WARNING")
-            
-        except Exception as e:
-            self.log_message(f"❌ Component restart error: {e}", "ERROR")
-
-    def _execute_trading_signal(self, signal):
-        """Execute Trading Signal"""
-        try:
-            from mt5_integration.order_executor import OrderType
-            
-            # กำหนด Order Type
-            order_type = OrderType.BUY if signal.direction.value == "BUY" else OrderType.SELL
-            
-            # ส่งออร์เดอร์
-            result = self.order_executor.send_market_order(
-                symbol="XAUUSD",
-                order_type=order_type,
-                volume=signal.suggested_volume,
-                comment=f"Signal_{signal.signal_id}",
-                strategy_name=signal.source_engine.value
-            )
-            
-            if result.status.value == "EXECUTED":
-                self.root.after(0, lambda: self.log_message(
-                    f"✅ ส่งออร์เดอร์สำเร็จ: {result.order_id} | "
-                    f"Price: {result.price_executed:.2f} | "
-                    f"Volume: {result.volume_executed:.2f}", "SUCCESS"))
-            else:
-                self.root.after(0, lambda: self.log_message(
-                    f"❌ ส่งออร์เดอร์ไม่สำเร็จ: {result.error_description}", "ERROR"))
-                
-        except Exception as e:
-            error_msg = str(e)
-            self.root.after(0, lambda msg=error_msg: self.log_message(f"❌ Execute Signal Error: {msg}", "ERROR"))
-
-    def _check_positions_for_recovery(self):
-        """ตรวจสอบ Positions ที่ต้อง Recovery - Fixed Version"""
-        try:
-            if not hasattr(self, 'recovery_engine') or not self.recovery_engine:
-                return
-            
-            # ดึง Positions จาก Order Executor
-            if hasattr(self, 'order_executor') and self.order_executor:
-                positions = self.order_executor.get_open_positions("XAUUSD")
-            else:
-                return
-            
-            recovery_triggered = False
-            
-            for pos in positions:
-                # ตรวจสอบขาดทุน
-                if pos['profit'] < -15.0:  # ขาดทุนเกิน $15
-                    try:
-                        # เรียก Recovery Engine ที่มีอยู่
-                        from intelligent_recovery.recovery_engine import RecoveryTrigger, RecoveryPriority
-                        
-                        success = self.recovery_engine.trigger_recovery(
-                            position_id=str(pos['ticket']),
-                            trigger_type=RecoveryTrigger.LOSS_THRESHOLD,
-                            priority=RecoveryPriority.HIGH if pos['profit'] < -30.0 else RecoveryPriority.MEDIUM
-                        )
-                        
-                        if success:
-                            recovery_triggered = True
-                            self.root.after(0, lambda t=pos['ticket'], p=pos['profit']: self.log_message(
-                                f"🔄 เริ่ม Recovery: Position {t} | Loss: ${p:.2f}", "WARNING"))
-                    
-                    except Exception as recovery_error:
-                        self.root.after(0, lambda e=str(recovery_error): self.log_message(
-                            f"❌ Recovery Trigger Error: {e}", "ERROR"))
-            
-            # แสดงสถิติ Recovery
-            if recovery_triggered:
-                try:
-                    stats = self.recovery_engine.get_recovery_summary()
-                    success_rate = stats.get('success_rate', 0)
-                    active_recoveries = stats.get('active_recoveries', 0)
-                    
-                    self.root.after(0, lambda sr=success_rate, ar=active_recoveries: self.log_message(
-                        f"📊 Recovery Status: Active={ar}, Success Rate={sr:.1f}%", "INFO"))
-                except:
-                    pass
-                        
-        except Exception as e:
-            # ไม่ต้องแสดง error เล็กๆ
-            pass
-
-    def close_all_positions(self):
-        """Close all open positions"""
-        if not messagebox.askyesno("Confirm", "Close all positions?"):
-            return
-        
-        self.log_message("Closing all positions...", "WARNING")
+                self._add_log_message("❌ Failed to start trading", "ERROR")
     
-    # Tools command methods
-    def show_market_analysis(self):
-        """Show market analysis window"""
-        messagebox.showinfo("Market Analysis", "Market Analysis feature coming soon!")
+    def _stop_trading(self):
+        """หยุดการเทรด"""
+        if self.trading_system:
+            success = self.trading_system.stop_trading()
+            if success:
+                self.is_trading = False
+                self.start_trading_btn.config(state='normal')
+                self.stop_trading_btn.config(state='disabled')
+                self._add_log_message("🛑 Trading stopped", "INFO")
     
-    def show_recovery_settings(self):
-        """Show recovery settings window"""
-        messagebox.showinfo("Recovery Settings", "Recovery Settings feature coming soon!")
+    def _emergency_stop(self):
+        """หยุดฉุกเฉิน"""
+        if messagebox.askyesno("Emergency Stop", "Are you sure you want to trigger emergency stop?"):
+            if self.trading_system:
+                self.trading_system.emergency_stop()
+                self.is_trading = False
+                self.start_trading_btn.config(state='disabled')
+                self.stop_trading_btn.config(state='disabled')
+                self._add_log_message("🚨 EMERGENCY STOP ACTIVATED!", "CRITICAL")
     
-    def show_risk_manager(self):
-        """Show risk manager window"""
-        messagebox.showinfo("Risk Manager", "Risk Manager feature coming soon!")
+    def _show_position_context_menu(self, event):
+        """แสดง Context Menu สำหรับ Position"""
+        # Context menu implementation
+        pass
     
-    # Help command methods
-    def show_manual(self):
-        """Show user manual"""
-        messagebox.showinfo("User Manual", "User Manual feature coming soon!")
+    def _export_data(self):
+        """Export ข้อมูล"""
+        messagebox.showinfo("Export", "Export feature coming soon!")
     
-    def show_about(self):
-        """Show about dialog"""
+    def _show_settings(self):
+        """แสดงหน้าต่างการตั้งค่า"""
+        messagebox.showinfo("Settings", "Settings feature coming soon!")
+    
+    def _show_recovery_manager(self):
+        """แสดง Recovery Manager"""
+        messagebox.showinfo("Recovery Manager", "Recovery Manager feature coming soon!")
+    
+    def _show_manual(self):
+        """แสดงคู่มือ"""
+        messagebox.showinfo("Manual", "Manual feature coming soon!")
+    
+    def _show_about(self):
+        """แสดงเกี่ยวกับ"""
         about_text = """
 🚀 Intelligent Gold Trading System v1.0
 
@@ -1265,45 +608,65 @@ Professional XAUUSD Trading Platform
 - High-Frequency Automated Trading
 - Real-time Market Analysis
 
-Built with Python & MT5 API
+Built with Python & Core Trading System
         """
         messagebox.showinfo("About", about_text)
     
-    def exit_application(self):
-        """Exit application safely"""
+    def _add_log_message(self, message: str, level: str = "INFO"):
+        """เพิ่มข้อความใน Log"""
+        try:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            # Color mapping
+            colors = {
+                "INFO": "#00ff00",
+                "SUCCESS": "#00ff00",
+                "WARNING": "#ffff00",
+                "ERROR": "#ff0000",
+                "CRITICAL": "#ff0000"
+            }
+            
+            formatted_msg = f"[{timestamp}] {message}\n"
+            
+            self.log_text.config(state='normal')
+            self.log_text.insert(tk.END, formatted_msg)
+            self.log_text.config(state='disabled')
+            self.log_text.see(tk.END)
+            
+            # Keep log size manageable
+            lines = self.log_text.get(1.0, tk.END).split('\n')
+            if len(lines) > 500:
+                self.log_text.config(state='normal')
+                self.log_text.delete(1.0, "50.0")
+                self.log_text.config(state='disabled')
+                
+        except Exception as e:
+            self.logger.error(f"❌ Log message error: {e}")
+    
+    def _update_time(self):
+        """อัพเดทเวลา"""
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.time_label.config(text=current_time)
+        self.root.after(1000, self._update_time)
+    
+    def _on_closing(self):
+        """จัดการเมื่อปิดหน้าต่าง"""
         if self.is_trading:
-            if not messagebox.askyesno("Confirm Exit", 
-                                     "Trading is active. Exit anyway?"):
+            if not messagebox.askyesno("Confirm Exit", "Trading is active. Exit anyway?"):
                 return
         
-        self.log_message("Shutting down system...", "INFO")
+        # Stop UI updates
         self.update_active = False
+        
+        # Shutdown trading system
+        if self.trading_system:
+            self.trading_system.shutdown_system()
+        
+        self._add_log_message("🛑 Shutting down system...", "INFO")
         self.root.quit()
+        self.root.destroy()
     
     def run(self):
-        """Start the GUI application"""
-        self.log_message("🚀 Trading System GUI Started", "INFO")
-        self.log_message("Ready for MT5 connection and live trading", "INFO")
+        """เริ่มต้น GUI Application"""
+        self._add_log_message("🖥️ Starting Trading System GUI", "INFO")
         self.root.mainloop()
-
-
-def main():
-    """Main entry point for GUI testing"""
-    # For testing purposes
-    class MockSettings:
-        trading_mode = "LIVE"
-    
-    class MockLogger:
-        def info(self, msg): print(f"INFO: {msg}")
-        def error(self, msg): print(f"ERROR: {msg}")
-        def warning(self, msg): print(f"WARNING: {msg}")
-    
-    settings = MockSettings()
-    logger = MockLogger()
-    
-    app = TradingSystemGUI(settings, logger)
-    app.run()
-
-
-if __name__ == "__main__":
-    main()

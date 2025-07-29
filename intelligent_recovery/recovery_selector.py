@@ -1,922 +1,669 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-INTELLIGENT RECOVERY SELECTOR - ระบบเลือกวิธี Recovery อัจฉริยะ
-========================================================
-เลือกวิธี Recovery ที่เหมาะสมที่สุดตามสภาพตลาดและสถานการณ์การขาดทุน
-รองรับการปรับตัวและเรียนรู้จากประสิทธิภาพการ Recovery
+POSITION TRACKER - Enhanced Position Tracking System
+=================================================
+ระบบติดตาม Position ที่ปรับปรุงให้รองรับระบบใหม่
+เพิ่ม methods ที่จำเป็นสำหรับ Core Trading System
 
-เชื่อมต่อไปยัง:
-- market_intelligence/market_analyzer.py (การวิเคราะห์ตลาด)
-- intelligent_recovery/strategies/* (วิธี Recovery ต่างๆ)
-- position_management/position_tracker.py (ติดตาม positions)
-- config/trading_params.py (พารามิเตอร์ Recovery)
+🔄 การปรับปรุง:
+- เพิ่ม get_all_positions() method
+- เพิ่ม get_positions_needing_recovery() method
+- ปรับ interface ให้ตรงกับ IntelligentTradingSystem
+- รองรับ Recovery System integration
+- เพิ่ม Real-time position monitoring
+- เพิ่ม Compatibility aliases
 """
 
+import MetaTrader5 as mt5
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
-import statistics
+import json
+from collections import deque, defaultdict
 
+# Internal imports - ปรับให้ตรงกับโครงสร้างเดิม
 try:
-    from market_intelligence.market_analyzer import (
-        get_market_analyzer, MarketCondition, TrendDirection, MarketAnalysis
-    )
-    from config.trading_params import get_trading_parameters, RecoveryMethod
-    from config.session_config import get_session_manager, SessionType
-    from utilities.professional_logger import setup_trading_logger
+    from config.settings import get_system_settings
+    from config.trading_params import get_trading_parameters
+    from utilities.professional_logger import setup_component_logger
     from utilities.error_handler import handle_trading_errors, ErrorCategory, ErrorSeverity
+    from mt5_integration.mt5_connector import ensure_mt5_connection
 except ImportError as e:
-    print(f"Import Error in recovery_selector.py: {e}")
-
-class RecoveryUrgency(Enum):
-    """ระดับความเร่งด่วนในการ Recovery"""
-    LOW = "LOW"           # ขาดทุนน้อย ไม่เร่งด่วน
-    MEDIUM = "MEDIUM"     # ขาดทุนปานกลาง ต้องระวัง
-    HIGH = "HIGH"         # ขาดทุนมาก ต้องรีบ Recovery
-    CRITICAL = "CRITICAL" # ขาดทุนมากมาย ต้อง Recovery ทันที
-
-class RecoverySuccess(Enum):
-    """ผลสำเร็จของการ Recovery"""
-    PENDING = "PENDING"           # กำลัง Recovery
-    SUCCESS = "SUCCESS"           # Recovery สำเร็จ
-    PARTIAL_SUCCESS = "PARTIAL_SUCCESS"  # Recovery บางส่วน
-    FAILED = "FAILED"             # Recovery ไม่สำเร็จ
-    ABANDONED = "ABANDONED"       # ยกเลิก Recovery
-
-@dataclass
-class LossPosition:
-    """ข้อมูล Position ที่ขาดทุน"""
-    position_id: str
-    symbol: str
-    entry_price: float
-    current_price: float
-    volume: float
-    loss_amount: float
-    loss_percentage: float
-    entry_time: datetime
-    holding_time_minutes: float
-    entry_strategy: str
-    market_condition_at_entry: str
-
-@dataclass
-class RecoveryStats:
-    """สถิติประสิทธิภาพของวิธี Recovery"""
-    method: RecoveryMethod
-    total_attempts: int = 0
-    successful_recoveries: int = 0
-    partial_recoveries: int = 0
-    failed_recoveries: int = 0
-    total_recovery_time_minutes: float = 0.0
-    total_recovery_cost: float = 0.0  # ต้นทุนเพิ่มเติมในการ Recovery
-    avg_recovery_time: float = 0.0
-    success_rate: float = 0.0
-    efficiency_score: float = 0.0  # คะแนนประสิทธิภาพรวม
+    # Fallback for missing modules
+    import logging
+    def setup_component_logger(name):
+        logger = logging.getLogger(name)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+        return logger
     
-    # ประสิทธิภาพในสภาพตลาดต่างๆ
-    condition_success_rates: Dict[str, float] = field(default_factory=dict)
-    urgency_success_rates: Dict[str, float] = field(default_factory=dict)
+    def handle_trading_errors(category, severity):
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    logging.error(f"Trading Error in {func.__name__}: {e}")
+                    return None
+            return wrapper
+        return decorator
     
-    def update_stats(self):
-        """อัพเดทสถิติที่คำนวณได้"""
-        if self.total_attempts > 0:
-            self.success_rate = (self.successful_recoveries / self.total_attempts) * 100
-            
-            if self.successful_recoveries > 0:
-                self.avg_recovery_time = self.total_recovery_time_minutes / self.successful_recoveries
-            
-            # คำนวณ efficiency score
-            success_weight = self.success_rate / 100
-            time_weight = max(0, 1.0 - (self.avg_recovery_time / 1440))  # 1440 min = 1 day
-            cost_weight = max(0, 1.0 - (abs(self.total_recovery_cost) / 1000))  # normalize by 1000
-            
-            self.efficiency_score = (success_weight * 0.6 + time_weight * 0.2 + cost_weight * 0.2)
+    def ensure_mt5_connection():
+        if not mt5.initialize():
+            return False
+        return True
+    
+    def get_system_settings():
+        return None
+    
+    def get_trading_parameters():
+        return None
+    
+    class ErrorCategory:
+        SYSTEM = "SYSTEM"
+        TRADING_LOGIC = "TRADING_LOGIC"
+        MARKET_DATA = "MARKET_DATA"
+        RECOVERY = "RECOVERY"
+    
+    class ErrorSeverity:
+        LOW = "LOW"
+        MEDIUM = "MEDIUM"
+        HIGH = "HIGH"
+        CRITICAL = "CRITICAL"
 
 @dataclass
-class RecoveryRecommendation:
-    """คำแนะนำวิธี Recovery"""
-    primary_method: RecoveryMethod
-    alternative_methods: List[RecoveryMethod]
-    confidence_score: float  # 0.0-1.0
-    urgency_level: RecoveryUrgency
-    estimated_recovery_time_minutes: float
-    estimated_additional_risk: float  # ความเสี่ยงเพิ่มเติม
-    recommended_parameters: Dict[str, Any]
-    reasoning: List[str]
-    success_probability: float  # 0.0-1.0
+class PositionData:
+    """ข้อมูล Position ที่ปรับปรุงแล้ว"""
+    ticket: str
+    symbol: str = "XAUUSD"
+    type: str = "BUY"  # BUY or SELL
+    volume: float = 0.01
+    price_open: float = 0.0
+    price_current: float = 0.0
+    profit: float = 0.0
+    swap: float = 0.0
+    commission: float = 0.0
+    time_open: datetime = field(default_factory=datetime.now)
+    comment: str = ""
+    
+    # Recovery Related
+    recovery_group: Optional[str] = None
+    recovery_level: int = 0
+    is_recovery_position: bool = False
+    needs_recovery: bool = False
+    
+    # Performance Metrics
+    unrealized_pnl: float = 0.0
+    pips: float = 0.0
+    hold_time_minutes: int = 0
+    max_profit: float = 0.0
+    max_loss: float = 0.0
+    
+    def __post_init__(self):
+        """คำนวณข้อมูลเพิ่มเติมหลังจากสร้าง object"""
+        self.unrealized_pnl = self.profit + self.swap + self.commission
+        self.pips = self._calculate_pips()
+        self.hold_time_minutes = self._calculate_hold_time_minutes()
+        self.needs_recovery = self.profit < -5.0  # ขาดทุนเกิน $5
+    
+    def _calculate_pips(self) -> float:
+        """คำนวณ Pips"""
+        if self.price_open == 0:
+            return 0.0
+        
+        pip_value = 0.1 if 'JPY' in self.symbol else 0.0001
+        if self.type == "BUY":
+            return (self.price_current - self.price_open) / pip_value
+        else:
+            return (self.price_open - self.price_current) / pip_value
+    
+    def _calculate_hold_time_minutes(self) -> int:
+        """คำนวณเวลาที่ถือ Position"""
+        if isinstance(self.time_open, datetime):
+            duration = datetime.now() - self.time_open
+            return int(duration.total_seconds() / 60)
+        return 0
+    
+    @property
+    def is_open(self) -> bool:
+        """ตรวจสอบว่า Position ยังเปิดอยู่หรือไม่"""
+        return True  # สำหรับ Position ที่ Track อยู่ควรจะเปิดอยู่
+    
+    @property
+    def is_profitable(self) -> bool:
+        """ตรวจสอบว่ากำไรหรือไม่"""
+        return self.unrealized_pnl > 0
+    
+    @property
+    def is_losing(self) -> bool:
+        """ตรวจสอบว่าขาดทุนหรือไม่"""
+        return self.profit < -0.01
+    
+    @property
+    def age_minutes(self) -> int:
+        """อายุของ Position เป็นนาที - alias สำหรับ hold_time_minutes"""
+        return self.hold_time_minutes
+    
+    @property
+    def type_str(self) -> str:
+        """แปลง type เป็น string"""
+        return self.type
+    
+    @property
+    def time_str(self) -> str:
+        """แปลงเวลาเป็น string"""
+        if isinstance(self.time_open, datetime):
+            return self.time_open.strftime("%H:%M:%S")
+        return "--:--:--"
+    
+    @property
+    def status(self) -> str:
+        """สถานะของ Position"""
+        if self.needs_recovery:
+            return "NEEDS_RECOVERY"
+        elif self.is_recovery_position:
+            return f"RECOVERY_L{self.recovery_level}"
+        elif self.is_profitable:
+            return "PROFITABLE"
+        else:
+            return "NORMAL"
+    
+    @property
+    def pips_profit(self) -> float:
+        """Alias สำหรับ pips (compatibility)"""
+        return self.pips
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """แปลงเป็น Dictionary"""
+        return {
+            'ticket': self.ticket,
+            'symbol': self.symbol,
+            'type': self.type,
+            'volume': self.volume,
+            'price_open': self.price_open,
+            'price_current': self.price_current,
+            'profit': self.profit,
+            'pips': self.pips,
+            'status': self.status,
+            'is_recovery': self.is_recovery_position,
+            'recovery_level': self.recovery_level,
+            'hold_time': self.hold_time_minutes
+        }
 
-class RecoverySelector:
+class EnhancedPositionTracker:
     """
-    ตัวเลือกวิธี Recovery อัจฉริยะ
-    เลือกวิธี Recovery ที่เหมาะสมที่สุดตามสถานการณ์
+    📊 Enhanced Position Tracker - ระบบติดตาม Position ที่ปรับปรุงแล้ว
+    
+    รองรับการทำงานกับ Core Trading System ใหม่
     """
     
     def __init__(self):
-        self.logger = setup_trading_logger()
-        self.market_analyzer = get_market_analyzer()
-        self.session_manager = get_session_manager()
-        self.trading_params = get_trading_parameters()
+        self.logger = setup_component_logger("EnhancedPositionTracker")
         
-        # สถิติประสิทธิภาพ
-        self.recovery_stats: Dict[RecoveryMethod, RecoveryStats] = {}
-        self.active_recoveries: Dict[str, Dict] = {}  # recovery_id -> recovery_info
-        self.recovery_history: List[Dict] = []
+        # Configuration
+        try:
+            self.settings = get_system_settings()
+            self.trading_params = get_trading_parameters()
+        except:
+            self.settings = None
+            self.trading_params = None
         
-        # การตั้งค่า
-        self.min_attempts_for_stats = 5  # จำนวนครั้งขั้นต่ำก่อนใช้สถิติ
-        self.max_concurrent_recoveries = 10  # จำนวน Recovery พร้อมกันสูงสุด
+        # Position Storage
+        self.positions: Dict[str, PositionData] = {}
+        self.position_history: List[PositionData] = []
+        
+        # Tracking State
+        self.tracking_active = False
+        self.tracking_thread: Optional[threading.Thread] = None
+        self.last_update_time: Optional[datetime] = None
         
         # Threading
-        self.selector_lock = threading.Lock()
+        self.tracker_lock = threading.Lock()
+        self.update_interval = 2  # seconds
         
-        # เริ่มต้นสถิติ
-        self._initialize_recovery_stats()
+        # Callbacks
+        self.position_callbacks: List[Callable] = []
+        self.recovery_callbacks: List[Callable] = []
         
-        self.logger.info("🔄 เริ่มต้น Recovery Selector")
+        # Statistics
+        self.total_positions_tracked = 0
+        self.positions_needing_recovery = 0
+        
+        self.logger.info("📊 เริ่มต้น Enhanced Position Tracker")
     
-    def _initialize_recovery_stats(self):
-        """เริ่มต้นสถิติสำหรับวิธี Recovery ทั้งหมด"""
-        for method in RecoveryMethod:
-            self.recovery_stats[method] = RecoveryStats(method=method)
+    def start_tracking(self) -> bool:
+        """🚀 เริ่มการติดตาม positions"""
+        if self.tracking_active:
+            return True
+        
+        try:
+            if not ensure_mt5_connection():
+                self.logger.error("❌ ไม่สามารถเชื่อมต่อ MT5")
+                return False
+            
+            self.tracking_active = True
+            self.tracking_thread = threading.Thread(
+                target=self._tracking_loop,
+                daemon=True,
+                name="PositionTracker"
+            )
+            self.tracking_thread.start()
+            
+            self.logger.info("🚀 เริ่มติดตาม Positions แบบเรียลไทม์")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ ข้อผิดพลาดในการเริ่มติดตาม: {e}")
+            return False
     
-    @handle_trading_errors(ErrorCategory.RECOVERY, ErrorSeverity.HIGH)
-    def select_recovery_method(self, loss_positions: List[LossPosition]) -> Optional[RecoveryRecommendation]:
-        """
-        เลือกวิธี Recovery ที่เหมาะสมสำหรับ positions ที่ขาดทุน
-        """
-        with self.selector_lock:
+    def stop_tracking(self):
+        """🛑 หยุดการติดตาม positions"""
+        self.tracking_active = False
+        if self.tracking_thread and self.tracking_thread.is_alive():
+            self.tracking_thread.join(timeout=5.0)
+        
+        self.logger.info("🛑 หยุดติดตาม Positions")
+    
+    @handle_trading_errors(ErrorCategory.SYSTEM, ErrorSeverity.MEDIUM)
+    def _tracking_loop(self):
+        """🔄 ลูปหลักสำหรับติดตาม positions"""
+        
+        while self.tracking_active:
             try:
-                if not loss_positions:
-                    return None
+                # อัพเดทข้อมูล positions
+                self._update_positions_from_mt5()
                 
-                # วิเคราะห์สถานการณ์การขาดทุน
-                loss_analysis = self._analyze_loss_situation(loss_positions)
+                # ตรวจสอบการเปลี่ยนแปลง
+                self._detect_position_changes()
                 
-                # วิเคราะห์ตลาดปัจจุบัน
-                market_analysis = self.market_analyzer.get_current_analysis()
-                if not market_analysis:
-                    self.logger.warning("⚠️ ไม่สามารถวิเคราะห์ตลาดสำหรับ Recovery ได้")
-                    return None
+                # คำนวณ metrics
+                self._calculate_portfolio_metrics()
                 
-                # คำนวณระดับความเร่งด่วน
-                urgency_level = self._calculate_urgency_level(loss_analysis)
+                # เรียก callbacks
+                self._notify_callbacks()
                 
-                # คำนวณคะแนนสำหรับแต่ละวิธี Recovery
-                method_scores = self._calculate_recovery_scores(
-                    loss_analysis, 
-                    market_analysis, 
-                    urgency_level
-                )
+                # อัพเดทเวลา
+                self.last_update_time = datetime.now()
                 
-                # เลือกวิธีที่ดีที่สุด
-                best_method = max(method_scores.keys(), key=lambda m: method_scores[m])
-                
-                # เรียงวิธีทางเลือก
-                alternative_methods = sorted(
-                    [m for m in method_scores.keys() if m != best_method],
-                    key=lambda m: method_scores[m],
-                    reverse=True
-                )[:2]
-                
-                # สร้างคำแนะนำ
-                recommendation = self._create_recovery_recommendation(
-                    best_method,
-                    alternative_methods,
-                    method_scores[best_method],
-                    loss_analysis,
-                    market_analysis,
-                    urgency_level
-                )
-                
-                self.logger.info(
-                    f"🔄 เลือกวิธี Recovery: {best_method.value} "
-                    f"(Confidence: {recommendation.confidence_score:.2f}) "
-                    f"Urgency: {urgency_level.value} "
-                    f"Loss: {loss_analysis['total_loss']:.2f}"
-                )
-                
-                return recommendation
+                # รอก่อนรอบถัดไป
+                time.sleep(self.update_interval)
                 
             except Exception as e:
-                self.logger.error(f"❌ ข้อผิดพลาดในการเลือกวิธี Recovery: {e}")
-                return None
+                self.logger.error(f"❌ ข้อผิดพลาดใน tracking loop: {e}")
+                time.sleep(5.0)
     
-    def _analyze_loss_situation(self, loss_positions: List[LossPosition]) -> Dict:
-        """วิเคราะห์สถานการณ์การขาดทุน"""
+    def _update_positions_from_mt5(self):
+        """📈 อัพเดทข้อมูล positions จาก MT5"""
         
-        total_loss = sum(pos.loss_amount for pos in loss_positions)
-        total_volume = sum(pos.volume for pos in loss_positions)
-        avg_loss_percentage = statistics.mean([pos.loss_percentage for pos in loss_positions])
-        max_loss_percentage = max(pos.loss_percentage for pos in loss_positions)
+        if not ensure_mt5_connection():
+            return
         
-        # วิเคราะห์การกระจายของ positions
-        symbols = list(set(pos.symbol for pos in loss_positions))
-        entry_strategies = list(set(pos.entry_strategy for pos in loss_positions))
-        
-        # คำนวณเวลาถือ position เฉลี่ย
-        avg_holding_time = statistics.mean([pos.holding_time_minutes for pos in loss_positions])
-        max_holding_time = max(pos.holding_time_minutes for pos in loss_positions)
-        
-        # วิเคราะห์ pattern การขาดทุน
-        loss_trend = self._analyze_loss_trend(loss_positions)
-        
-        return {
-            "position_count": len(loss_positions),
-            "total_loss": total_loss,
-            "total_volume": total_volume,
-            "avg_loss_percentage": avg_loss_percentage,
-            "max_loss_percentage": max_loss_percentage,
-            "symbols": symbols,
-            "entry_strategies": entry_strategies,
-            "avg_holding_time": avg_holding_time,
-            "max_holding_time": max_holding_time,
-            "loss_trend": loss_trend,
-            "loss_concentration": len(symbols) / len(loss_positions)  # ค่าใกล้ 1 = กระจาย, ใกล้ 0 = รวมกัน
-        }
-    
-    def _analyze_loss_trend(self, loss_positions: List[LossPosition]) -> str:
-        """วิเคราะห์แนวโน้มการขาดทุน"""
-        
-        # เรียงตามเวลา entry
-        sorted_positions = sorted(loss_positions, key=lambda p: p.entry_time)
-        
-        if len(sorted_positions) < 2:
-            return "STABLE"
-        
-        # คำนวณแนวโน้มการขาดทุน
-        recent_losses = [pos.loss_percentage for pos in sorted_positions[-3:]]  # 3 positions ล่าสุด
-        earlier_losses = [pos.loss_percentage for pos in sorted_positions[:-3]]
-        
-        if not earlier_losses:
-            return "INSUFFICIENT_DATA"
-        
-        recent_avg = statistics.mean(recent_losses)
-        earlier_avg = statistics.mean(earlier_losses)
-        
-        if recent_avg > earlier_avg * 1.2:
-            return "WORSENING"
-        elif recent_avg < earlier_avg * 0.8:
-            return "IMPROVING"
-        else:
-            return "STABLE"
-    
-    def _calculate_urgency_level(self, loss_analysis: Dict) -> RecoveryUrgency:
-        """คำนวณระดับความเร่งด่วน"""
-        
-        urgency_score = 0
-        
-        # ขาดทุนรวม
-        if abs(loss_analysis["total_loss"]) > 1000:
-            urgency_score += 3
-        elif abs(loss_analysis["total_loss"]) > 500:
-            urgency_score += 2
-        elif abs(loss_analysis["total_loss"]) > 100:
-            urgency_score += 1
-        
-        # เปอร์เซ็นต์การขาดทุนสูงสุด
-        if loss_analysis["max_loss_percentage"] > 50:
-            urgency_score += 3
-        elif loss_analysis["max_loss_percentage"] > 30:
-            urgency_score += 2
-        elif loss_analysis["max_loss_percentage"] > 15:
-            urgency_score += 1
-        
-        # แนวโน้มการขาดทุน
-        if loss_analysis["loss_trend"] == "WORSENING":
-            urgency_score += 2
-        elif loss_analysis["loss_trend"] == "IMPROVING":
-            urgency_score -= 1
-        
-        # เวลาถือ position
-        if loss_analysis["max_holding_time"] > 1440:  # > 1 วัน
-            urgency_score += 1
-        
-        # จำนวน positions
-        if loss_analysis["position_count"] > 10:
-            urgency_score += 2
-        elif loss_analysis["position_count"] > 5:
-            urgency_score += 1
-        
-        # กำหนดระดับความเร่งด่วน
-        if urgency_score >= 8:
-            return RecoveryUrgency.CRITICAL
-        elif urgency_score >= 5:
-            return RecoveryUrgency.HIGH
-        elif urgency_score >= 2:
-            return RecoveryUrgency.MEDIUM
-        else:
-            return RecoveryUrgency.LOW
-    
-    def _calculate_recovery_scores(self, loss_analysis: Dict, 
-                                 market_analysis: MarketAnalysis,
-                                 urgency_level: RecoveryUrgency) -> Dict[RecoveryMethod, float]:
-        """คำนวณคะแนนสำหรับแต่ละวิธี Recovery"""
-        
-        scores = {}
-        
-        for method in RecoveryMethod:
-            score = 0.0
+        try:
+            # ดึง positions ทั้งหมดจาก MT5
+            mt5_positions = mt5.positions_get()
+            if mt5_positions is None:
+                mt5_positions = []
             
-            # คะแนนพื้นฐานตามประเภทของการขาดทุน (30%)
-            base_score = self._get_base_recovery_score(method, loss_analysis)
+            current_tickets = set()
             
-            # คะแนนจากประสิทธิภาพในอดีต (25%)
-            performance_score = self._get_recovery_performance_score(method, market_analysis, urgency_level)
-            
-            # คะแนนจากความเหมาะสมกับสภาพตลาด (25%)
-            market_compatibility_score = self._get_market_compatibility_score(method, market_analysis)
-            
-            # คะแนนจากความเร่งด่วน (20%)
-            urgency_compatibility_score = self._get_urgency_compatibility_score(method, urgency_level)
-            
-            # รวมคะแนน
-            total_score = (base_score * 0.3 + 
-                          performance_score * 0.25 + 
-                          market_compatibility_score * 0.25 + 
-                          urgency_compatibility_score * 0.2)
-            
-            scores[method] = min(max(total_score, 0.0), 1.0)
-        
-        return scores
+            with self.tracker_lock:
+                # อัพเดท positions ที่มีอยู่
+                for mt5_pos in mt5_positions:
+                    ticket = str(mt5_pos.ticket)
+                    current_tickets.add(ticket)
+                    
+                    # ดึงราคาปัจจุบัน
+                    symbol_info = mt5.symbol_info_tick(mt5_pos.symbol)
+                    current_price = 0.0
+                    if symbol_info:
+                        if mt5_pos.type == mt5.ORDER_TYPE_BUY:
+                            current_price = symbol_info.bid
+                        else:
+                            current_price = symbol_info.ask
+                    
+                    # สร้างหรืออัพเดท Position
+                    if ticket in self.positions:
+                        # อัพเดท position ที่มีอยู่
+                        pos = self.positions[ticket]
+                        pos.price_current = current_price
+                        pos.profit = mt5_pos.profit
+                        pos.swap = mt5_pos.swap
+                        pos.commission = mt5_pos.commission
+                        pos.unrealized_pnl = pos.profit + pos.swap + pos.commission
+                        pos.pips = pos._calculate_pips()
+                        pos.hold_time_minutes = pos._calculate_hold_time_minutes()
+                        pos.needs_recovery = pos.profit < -5.0
+                        
+                        # อัพเดท max profit/loss
+                        if pos.profit > pos.max_profit:
+                            pos.max_profit = pos.profit
+                        if pos.profit < pos.max_loss:
+                            pos.max_loss = pos.profit
+                    else:
+                        # สร้าง position ใหม่
+                        position_data = PositionData(
+                            ticket=ticket,
+                            symbol=mt5_pos.symbol,
+                            type="BUY" if mt5_pos.type == mt5.ORDER_TYPE_BUY else "SELL",
+                            volume=mt5_pos.volume,
+                            price_open=mt5_pos.price_open,
+                            price_current=current_price,
+                            profit=mt5_pos.profit,
+                            swap=mt5_pos.swap,
+                            commission=mt5_pos.commission,
+                            time_open=datetime.fromtimestamp(mt5_pos.time),
+                            comment=mt5_pos.comment
+                        )
+                        
+                        self.positions[ticket] = position_data
+                        self.total_positions_tracked += 1
+                        
+                        self.logger.info(f"📈 New Position: {ticket} {position_data.type} {position_data.volume}")
+                
+                # ลบ positions ที่ปิดแล้ว
+                closed_tickets = set(self.positions.keys()) - current_tickets
+                for ticket in closed_tickets:
+                    closed_pos = self.positions.pop(ticket)
+                    self.position_history.append(closed_pos)
+                    self.logger.info(f"📉 Position Closed: {ticket} P&L: ${closed_pos.profit:.2f}")
+                
+        except Exception as e:
+            self.logger.error(f"❌ ข้อผิดพลาดในการอัพเดท positions: {e}")
     
-    def _get_base_recovery_score(self, method: RecoveryMethod, loss_analysis: Dict) -> float:
-        """คะแนนพื้นฐานตามลักษณะการขาดทุน"""
+    def _detect_position_changes(self):
+        """🔍 ตรวจสอบการเปลี่ยนแปลงของ positions"""
+        # ตรวจสอบ positions ที่ต้องการ recovery
+        recovery_needed = 0
+        for position in self.positions.values():
+            if position.needs_recovery and not position.is_recovery_position:
+                recovery_needed += 1
         
-        # Martingale Smart - เหมาะกับการขาดทุนน้อย positions น้อย
-        if method == RecoveryMethod.MARTINGALE_SMART:
-            if (loss_analysis["position_count"] <= 3 and 
-                loss_analysis["max_loss_percentage"] <= 20):
-                return 0.9
-            elif loss_analysis["position_count"] <= 5:
-                return 0.7
-            else:
-                return 0.3
-        
-        # Grid Intelligent - เหมาะกับการขาดทุนปานกลาง
-        elif method == RecoveryMethod.GRID_INTELLIGENT:
-            if (loss_analysis["position_count"] <= 8 and 
-                10 <= loss_analysis["max_loss_percentage"] <= 40):
-                return 0.9
-            elif loss_analysis["position_count"] <= 12:
-                return 0.7
-            else:
-                return 0.4
-        
-        # Hedging Advanced - เหมาะกับการขาดทุนมาก ต้องการ Recovery เร็ว
-        elif method == RecoveryMethod.HEDGING_ADVANCED:
-            if (loss_analysis["max_loss_percentage"] > 30 or 
-                abs(loss_analysis["total_loss"]) > 500):
-                return 0.9
-            elif loss_analysis["max_loss_percentage"] > 15:
-                return 0.7
-            else:
-                return 0.4
-        
-        # Averaging Intelligent - เหมาะกับ positions หลายตัว
-        elif method == RecoveryMethod.AVERAGING_INTELLIGENT:
-            if (loss_analysis["position_count"] >= 5 and 
-                loss_analysis["loss_concentration"] > 0.5):  # กระจาย
-                return 0.8
-            elif loss_analysis["position_count"] >= 3:
-                return 0.6
-            else:
-                return 0.3
-        
-        # Correlation Recovery - เหมาะกับ positions หลาย symbol
-        elif method == RecoveryMethod.CORRELATION_RECOVERY:
-            if len(loss_analysis["symbols"]) > 1:
-                return 0.8
-            else:
-                return 0.2
-        
-        return 0.5
+        self.positions_needing_recovery = recovery_needed
     
-    def _get_recovery_performance_score(self, method: RecoveryMethod, 
-                                      market_analysis: MarketAnalysis,
-                                      urgency_level: RecoveryUrgency) -> float:
-        """คะแนนจากประสิทธิภาพในอดีต"""
-        
-        stats = self.recovery_stats.get(method)
-        if not stats or stats.total_attempts < self.min_attempts_for_stats:
-            return 0.5  # คะแนนกลางถ้าไม่มีข้อมูลเพียงพอ
-        
-        # คะแนนพื้นฐานจาก success rate
-        base_performance = stats.success_rate / 100
-        
-        # ปรับตามสภาพตลาด
-        condition_key = market_analysis.primary_condition.value
-        condition_performance = stats.condition_success_rates.get(condition_key, stats.success_rate) / 100
-        
-        # ปรับตามความเร่งด่วน
-        urgency_key = urgency_level.value
-        urgency_performance = stats.urgency_success_rates.get(urgency_key, stats.success_rate) / 100
-        
-        # รวมคะแนน
-        performance_score = (base_performance * 0.4 + 
-                           condition_performance * 0.3 + 
-                           urgency_performance * 0.3)
-        
-        return performance_score
+    def _calculate_portfolio_metrics(self):
+        """📊 คำนวณ metrics ของ portfolio"""
+        # คำนวณข้อมูลรวม - เพิ่มเติมในอนาคต
+        pass
     
-    def _get_market_compatibility_score(self, method: RecoveryMethod, 
-                                      market_analysis: MarketAnalysis) -> float:
-        """คะแนนความเหมาะสมกับสภาพตลาด"""
-        
-        # Matrix ความเหมาะสมระหว่างวิธี Recovery และสภาพตลาด
-        compatibility_matrix = {
-            RecoveryMethod.MARTINGALE_SMART: {
-                MarketCondition.RANGING_TIGHT: 0.9,
-                MarketCondition.RANGING_WIDE: 0.7,
-                MarketCondition.TRENDING_WEAK: 0.6,
-                MarketCondition.TRENDING_STRONG: 0.3,
-                MarketCondition.VOLATILE_HIGH: 0.2,
-                MarketCondition.NEWS_IMPACT: 0.1
-            },
-            RecoveryMethod.GRID_INTELLIGENT: {
-                MarketCondition.TRENDING_STRONG: 0.9,
-                MarketCondition.TRENDING_WEAK: 0.8,
-                MarketCondition.RANGING_WIDE: 0.6,
-                MarketCondition.RANGING_TIGHT: 0.5,
-                MarketCondition.VOLATILE_HIGH: 0.4,
-                MarketCondition.NEWS_IMPACT: 0.3
-            },
-            RecoveryMethod.HEDGING_ADVANCED: {
-                MarketCondition.VOLATILE_HIGH: 1.0,
-                MarketCondition.NEWS_IMPACT: 0.9,
-                MarketCondition.TRENDING_STRONG: 0.7,
-                MarketCondition.TRENDING_WEAK: 0.6,
-                MarketCondition.RANGING_WIDE: 0.4,
-                MarketCondition.RANGING_TIGHT: 0.3
-            },
-            RecoveryMethod.AVERAGING_INTELLIGENT: {
-                MarketCondition.RANGING_TIGHT: 0.8,
-                MarketCondition.RANGING_WIDE: 0.9,
-                MarketCondition.TRENDING_WEAK: 0.7,
-                MarketCondition.TRENDING_STRONG: 0.5,
-                MarketCondition.VOLATILE_HIGH: 0.4,
-                MarketCondition.NEWS_IMPACT: 0.3
-            },
-            RecoveryMethod.CORRELATION_RECOVERY: {
-                MarketCondition.VOLATILE_HIGH: 0.8,
-                MarketCondition.NEWS_IMPACT: 0.7,
-                MarketCondition.TRENDING_STRONG: 0.6,
-                MarketCondition.TRENDING_WEAK: 0.5,
-                MarketCondition.RANGING_WIDE: 0.4,
-                MarketCondition.RANGING_TIGHT: 0.3
-            }
-        }
-        
-        method_compatibility = compatibility_matrix.get(method, {})
-        return method_compatibility.get(market_analysis.primary_condition, 0.5)
+    def _notify_callbacks(self):
+        """📞 เรียก callbacks"""
+        try:
+            for callback in self.position_callbacks:
+                callback(list(self.positions.values()))
+        except Exception as e:
+            self.logger.error(f"❌ Callback Error: {e}")
     
-    def _get_urgency_compatibility_score(self, method: RecoveryMethod, 
-                                       urgency_level: RecoveryUrgency) -> float:
-        """คะแนนความเหมาะสมกับระดับความเร่งด่วน"""
-        
-        # วิธี Recovery แต่ละแบบมีความเหมาะสมกับความเร่งด่วนต่างกัน
-        urgency_compatibility = {
-            RecoveryMethod.MARTINGALE_SMART: {
-                RecoveryUrgency.LOW: 0.9,
-                RecoveryUrgency.MEDIUM: 0.7,
-                RecoveryUrgency.HIGH: 0.4,
-                RecoveryUrgency.CRITICAL: 0.2
-            },
-            RecoveryMethod.GRID_INTELLIGENT: {
-                RecoveryUrgency.LOW: 0.8,
-                RecoveryUrgency.MEDIUM: 0.9,
-                RecoveryUrgency.HIGH: 0.7,
-                RecoveryUrgency.CRITICAL: 0.5
-            },
-            RecoveryMethod.HEDGING_ADVANCED: {
-                RecoveryUrgency.LOW: 0.5,
-                RecoveryUrgency.MEDIUM: 0.7,
-                RecoveryUrgency.HIGH: 0.9,
-                RecoveryUrgency.CRITICAL: 1.0
-            },
-            RecoveryMethod.AVERAGING_INTELLIGENT: {
-                RecoveryUrgency.LOW: 0.8,
-                RecoveryUrgency.MEDIUM: 0.8,
-                RecoveryUrgency.HIGH: 0.6,
-                RecoveryUrgency.CRITICAL: 0.4
-            },
-            RecoveryMethod.CORRELATION_RECOVERY: {
-                RecoveryUrgency.LOW: 0.6,
-                RecoveryUrgency.MEDIUM: 0.7,
-                RecoveryUrgency.HIGH: 0.8,
-                RecoveryUrgency.CRITICAL: 0.7
-            }
-        }
-        
-        method_urgency = urgency_compatibility.get(method, {})
-        return method_urgency.get(urgency_level, 0.5)
+    # === PUBLIC METHODS สำหรับ Core Trading System ===
     
-    def _create_recovery_recommendation(self, primary_method: RecoveryMethod,
-                                      alternative_methods: List[RecoveryMethod],
-                                      confidence_score: float,
-                                      loss_analysis: Dict,
-                                      market_analysis: MarketAnalysis,
-                                      urgency_level: RecoveryUrgency) -> RecoveryRecommendation:
-        """สร้างคำแนะนำ Recovery"""
-        
-        # สร้างเหตุผล
-        reasoning = []
-        reasoning.append(f"การขาดทุนรวม: {loss_analysis['total_loss']:.2f}")
-        reasoning.append(f"จำนวน Positions: {loss_analysis['position_count']}")
-        reasoning.append(f"การขาดทุนสูงสุด: {loss_analysis['max_loss_percentage']:.1f}%")
-        reasoning.append(f"สภาพตลาด: {market_analysis.primary_condition.value}")
-        reasoning.append(f"ระดับความเร่งด่วน: {urgency_level.value}")
-        
-        # ประมาณเวลา Recovery
-        estimated_time = self._estimate_recovery_time(primary_method, loss_analysis, urgency_level)
-        
-        # ประมาณความเสี่ยงเพิ่มเติม
-        additional_risk = self._estimate_additional_risk(primary_method, loss_analysis)
-        
-        # ความน่าจะเป็นที่จะสำเร็จ
-        success_probability = self._estimate_success_probability(primary_method, loss_analysis, market_analysis)
-        
-        # พารามิเตอร์ที่แนะนำ
-        recommended_params = self._get_recommended_parameters(primary_method, loss_analysis, market_analysis)
-        
-        return RecoveryRecommendation(
-            primary_method=primary_method,
-            alternative_methods=alternative_methods,
-            confidence_score=confidence_score,
-            urgency_level=urgency_level,
-            estimated_recovery_time_minutes=estimated_time,
-            estimated_additional_risk=additional_risk,
-            recommended_parameters=recommended_params,
-            reasoning=reasoning,
-            success_probability=success_probability
-        )
+    def get_all_positions(self) -> List[PositionData]:
+        """📋 ดึง Position ทั้งหมด (สำหรับ Core Trading System)"""
+        with self.tracker_lock:
+            return list(self.positions.values())
     
-    def _estimate_recovery_time(self, method: RecoveryMethod, 
-                              loss_analysis: Dict, urgency_level: RecoveryUrgency) -> float:
-        """ประมาณเวลาที่ต้องใช้ในการ Recovery"""
-        
-        # เวลาพื้นฐานตามวิธี
-        base_times = {
-            RecoveryMethod.MARTINGALE_SMART: 60,      # 1 ชั่วโมง
-            RecoveryMethod.GRID_INTELLIGENT: 240,     # 4 ชั่วโมง
-            RecoveryMethod.HEDGING_ADVANCED: 30,      # 30 นาที
-            RecoveryMethod.AVERAGING_INTELLIGENT: 180, # 3 ชั่วโมง
-            RecoveryMethod.CORRELATION_RECOVERY: 120   # 2 ชั่วโมง
-        }
-        
-        base_time = base_times.get(method, 120)
-        
-        # ปรับตามขนาดการขาดทุน
-        loss_multiplier = 1.0 + (abs(loss_analysis["total_loss"]) / 1000)
-        
-        # ปรับตามจำนวน positions
-        position_multiplier = 1.0 + (loss_analysis["position_count"] / 10)
-        
-        # ปรับตามความเร่งด่วน (เร่งด่วนมาก = เวลาน้อยลง แต่เสี่ยงมากขึ้น)
-        urgency_multipliers = {
-            RecoveryUrgency.LOW: 1.5,
-            RecoveryUrgency.MEDIUM: 1.0,
-            RecoveryUrgency.HIGH: 0.7,
-            RecoveryUrgency.CRITICAL: 0.5
-        }
-        urgency_multiplier = urgency_multipliers.get(urgency_level, 1.0)
-        
-        estimated_time = base_time * loss_multiplier * position_multiplier * urgency_multiplier
-        
-        return max(15, min(estimated_time, 1440))  # จำกัดระหว่าง 15 นาที - 1 วัน
+    def get_positions_needing_recovery(self) -> List[PositionData]:
+        """🔄 ดึง Positions ที่ต้องการ Recovery"""
+        with self.tracker_lock:
+            return [pos for pos in self.positions.values() 
+                   if pos.needs_recovery and not pos.is_recovery_position]
     
-    def _estimate_additional_risk(self, method: RecoveryMethod, loss_analysis: Dict) -> float:
-        """ประมาณความเสี่ยงเพิ่มเติมในการ Recovery"""
-        
-        # ความเสี่ยงพื้นฐานตามวิธี (% ของการขาดทุนปัจจุบัน)
-        base_risks = {
-            RecoveryMethod.MARTINGALE_SMART: 0.5,      # 50% ของการขาดทุนปัจจุบัน
-            RecoveryMethod.GRID_INTELLIGENT: 0.3,      # 30%
-            RecoveryMethod.HEDGING_ADVANCED: 0.2,      # 20%
-            RecoveryMethod.AVERAGING_INTELLIGENT: 0.4, # 40%
-            RecoveryMethod.CORRELATION_RECOVERY: 0.6   # 60%
-        }
-        
-        base_risk = base_risks.get(method, 0.4)
-        current_loss = abs(loss_analysis["total_loss"])
-        
-        # ปรับตามขนาดการขาดทุน (ขาดทุนมาก = เสี่ยงมากขึ้น)
-        if current_loss > 1000:
-            risk_multiplier = 1.5
-        elif current_loss > 500:
-            risk_multiplier = 1.2  
-        else:
-            risk_multiplier = 1.0
-        
-        # ปรับตามจำนวน positions
-        if loss_analysis["position_count"] > 10:
-            position_risk_multiplier = 1.3
-        elif loss_analysis["position_count"] > 5:
-            position_risk_multiplier = 1.1
-        else:
-            position_risk_multiplier = 1.0
-        
-        additional_risk = current_loss * base_risk * risk_multiplier * position_risk_multiplier
-        
-        return additional_risk
+    def get_position_by_ticket(self, ticket: str) -> Optional[PositionData]:
+        """🎫 ดึง Position ตาม Ticket"""
+        with self.tracker_lock:
+            return self.positions.get(ticket)
     
-    def _estimate_success_probability(self, method: RecoveryMethod, 
-                                    loss_analysis: Dict, 
-                                    market_analysis: MarketAnalysis) -> float:
-        """ประมาณความน่าจะเป็นที่จะ Recovery สำเร็จ"""
-        
-        # ความน่าจะเป็นพื้นฐานจากสถิติ
-        stats = self.recovery_stats.get(method)
-        if stats and stats.total_attempts >= self.min_attempts_for_stats:
-            base_probability = stats.success_rate / 100
-        else:
-            # ค่าเริ่มต้นตามลักษณะของวิธี
-            default_probabilities = {
-                RecoveryMethod.MARTINGALE_SMART: 0.75,
-                RecoveryMethod.GRID_INTELLIGENT: 0.80,
-                RecoveryMethod.HEDGING_ADVANCED: 0.70,
-                RecoveryMethod.AVERAGING_INTELLIGENT: 0.78,
-                RecoveryMethod.CORRELATION_RECOVERY: 0.65
-            }
-            base_probability = default_probabilities.get(method, 0.70)
-        
-        # ปรับตามสภาพตลาด
-        market_adjustment = self._get_market_compatibility_score(method, market_analysis)
-        
-        # ปรับตามขนาดการขาดทุน (ขาดทุนมาก = โอกาสสำเร็จน้อยลง)
-        if loss_analysis["max_loss_percentage"] > 50:
-            loss_adjustment = 0.7
-        elif loss_analysis["max_loss_percentage"] > 30:
-            loss_adjustment = 0.8
-        elif loss_analysis["max_loss_percentage"] > 15:
-            loss_adjustment = 0.9
-        else:
-            loss_adjustment = 1.0
-        
-        # ปรับตามแนวโน้มการขาดทุน
-        if loss_analysis["loss_trend"] == "WORSENING":
-            trend_adjustment = 0.8
-        elif loss_analysis["loss_trend"] == "IMPROVING":
-            trend_adjustment = 1.1
-        else:
-            trend_adjustment = 1.0
-        
-        # คำนวณความน่าจะเป็นสุดท้าย
-        final_probability = (base_probability * 0.4 + 
-                            market_adjustment * 0.3 + 
-                            base_probability * loss_adjustment * 0.2 + 
-                            base_probability * trend_adjustment * 0.1)
-        
-        return min(max(final_probability, 0.1), 0.95)  # จำกัดระหว่าง 10%-95%
+    def get_positions_by_symbol(self, symbol: str = "XAUUSD") -> List[PositionData]:
+        """📊 ดึง Positions ตาม Symbol"""
+        with self.tracker_lock:
+            return [pos for pos in self.positions.values() if pos.symbol == symbol]
     
-    def _get_recommended_parameters(self, method: RecoveryMethod,
-                                    loss_analysis: Dict,
-                                    market_analysis: MarketAnalysis) -> Dict[str, Any]:
-        """ดึงพารามิเตอร์ที่แนะนำสำหรับวิธี Recovery"""
-        
-        # ดึงพารามิเตอร์พื้นฐานจาก trading_params
-        base_params = self.trading_params.get_recovery_params(method)
-        
-        # ปรับพารามิเตอร์ตามสถานการณ์
-        recommended_params = base_params.copy()
-        
-        # ปรับตามขนาดการขาดทุน
-        loss_severity = loss_analysis["max_loss_percentage"]
-        
-        if method == RecoveryMethod.MARTINGALE_SMART:
-            # ปรับ multiplier ตามการขาดทุน
-            if loss_severity > 30:
-                recommended_params["initial_multiplier"] = min(
-                    recommended_params.get("initial_multiplier", 2.0) * 0.8, 
-                    recommended_params.get("max_multiplier", 8.0)
-                )
-            
-        elif method == RecoveryMethod.GRID_INTELLIGENT:
-            # ปรับระยะห่าง grid ตาม volatility
-            if market_analysis.volatility_level == "HIGH":
-                recommended_params["grid_spacing_pips"] = int(
-                    recommended_params.get("grid_spacing_pips", 30) * 1.5
-                )
-            elif market_analysis.volatility_level == "LOW":
-                recommended_params["grid_spacing_pips"] = int(
-                    recommended_params.get("grid_spacing_pips", 30) * 0.7
-                )
-        
-        elif method == RecoveryMethod.HEDGING_ADVANCED:
-            # ปรับ hedge ratio ตามความเร่งด่วน
-            if loss_severity > 40:
-                recommended_params["hedge_ratio"] = min(
-                    recommended_params.get("hedge_ratio", 1.0) * 1.2, 2.0
-                )
-        
-        return recommended_params
+    def get_profitable_positions(self) -> List[PositionData]:
+        """💰 ดึง Positions ที่กำไร"""
+        with self.tracker_lock:
+            return [pos for pos in self.positions.values() if pos.is_profitable]
     
-    def start_recovery(self, recovery_id: str, method: RecoveryMethod,
-                        loss_positions: List[LossPosition],
-                        parameters: Dict[str, Any]) -> bool:
-        """เริ่มต้นการ Recovery"""
-        
-        if len(self.active_recoveries) >= self.max_concurrent_recoveries:
-            self.logger.warning("⚠️ เกินจำนวน Recovery พร้อมกันสูงสุด")
+    def get_losing_positions(self) -> List[PositionData]:
+        """📉 ดึง Positions ที่ขาดทุน"""
+        with self.tracker_lock:
+            return [pos for pos in self.positions.values() if not pos.is_profitable]
+    
+    def get_recovery_positions(self) -> List[PositionData]:
+        """🔄 ดึง Recovery Positions"""
+        with self.tracker_lock:
+            return [pos for pos in self.positions.values() if pos.is_recovery_position]
+    
+    def mark_position_for_recovery(self, ticket: str, recovery_group: str = None) -> bool:
+        """🏷️ ทำเครื่องหมาย Position สำหรับ Recovery"""
+        with self.tracker_lock:
+            if ticket in self.positions:
+                position = self.positions[ticket]
+                position.recovery_group = recovery_group or f"REC_{ticket}"
+                self.logger.info(f"🏷️ Marked for recovery: {ticket}")
+                return True
             return False
-        
-        recovery_info = {
-            "recovery_id": recovery_id,
-            "method": method,
-            "start_time": datetime.now(),
-            "loss_positions": loss_positions,
-            "parameters": parameters,
-            "status": RecoverySuccess.PENDING,
-            "initial_loss": sum(pos.loss_amount for pos in loss_positions),
-            "current_loss": sum(pos.loss_amount for pos in loss_positions),
-            "recovery_cost": 0.0
-        }
-        
-        self.active_recoveries[recovery_id] = recovery_info
-        
-        self.logger.info(
-            f"🔄 เริ่ม Recovery: {recovery_id} Method: {method.value} "
-            f"Positions: {len(loss_positions)} Loss: {recovery_info['initial_loss']:.2f}"
-        )
-        
-        return True
     
-    def update_recovery_progress(self, recovery_id: str, 
-                                current_loss: float, additional_cost: float = 0.0):
-        """อัพเดทความคืบหน้าการ Recovery"""
-        
-        if recovery_id not in self.active_recoveries:
-            return
-        
-        recovery_info = self.active_recoveries[recovery_id]
-        recovery_info["current_loss"] = current_loss
-        recovery_info["recovery_cost"] += additional_cost
-        
-        # ตรวจสอบสถานะ
-        initial_loss = abs(recovery_info["initial_loss"])
-        current_loss_abs = abs(current_loss)
-        
-        if current_loss_abs <= initial_loss * 0.05:  # Recovery 95%+
-            recovery_info["status"] = RecoverySuccess.SUCCESS
-        elif current_loss_abs <= initial_loss * 0.5:  # Recovery 50%+
-            recovery_info["status"] = RecoverySuccess.PARTIAL_SUCCESS
+    def add_recovery_position(self, original_ticket: str, recovery_ticket: str, 
+                            recovery_level: int = 1) -> bool:
+        """➕ เพิ่ม Recovery Position"""
+        with self.tracker_lock:
+            if recovery_ticket in self.positions:
+                recovery_pos = self.positions[recovery_ticket]
+                recovery_pos.is_recovery_position = True
+                recovery_pos.recovery_level = recovery_level
+                
+                # เชื่อมโยงกับ original position
+                if original_ticket in self.positions:
+                    original_pos = self.positions[original_ticket]
+                    recovery_pos.recovery_group = original_pos.recovery_group
+                
+                self.logger.info(f"➕ Added recovery position: {recovery_ticket} Level {recovery_level}")
+                return True
+            return False
     
-    def complete_recovery(self, recovery_id: str, final_result: RecoverySuccess,
-                            market_condition: MarketCondition):
-        """จบการ Recovery และบันทึกผล"""
-        
-        if recovery_id not in self.active_recoveries:
-            return
-        
-        recovery_info = self.active_recoveries[recovery_id]
-        method = recovery_info["method"]
-        
-        # คำนวณเวลาที่ใช้
-        recovery_time = (datetime.now() - recovery_info["start_time"]).total_seconds() / 60
-        
-        # อัพเดทสถิติ
-        stats = self.recovery_stats[method]
-        stats.total_attempts += 1
-        stats.total_recovery_time_minutes += recovery_time
-        stats.total_recovery_cost += recovery_info["recovery_cost"]
-        
-        if final_result == RecoverySuccess.SUCCESS:
-            stats.successful_recoveries += 1
-        elif final_result == RecoverySuccess.PARTIAL_SUCCESS:
-            stats.partial_recoveries += 1
-        else:
-            stats.failed_recoveries += 1
-        
-        # อัพเดทประสิทธิภาพตามสภาพตลาด
-        condition_key = market_condition.value
-        if condition_key not in stats.condition_success_rates:
-            stats.condition_success_rates[condition_key] = 0.0
-        
-        if final_result == RecoverySuccess.SUCCESS:
-            stats.condition_success_rates[condition_key] = min(
-                stats.condition_success_rates[condition_key] + 10, 100
-            )
-        else:
-            stats.condition_success_rates[condition_key] = max(
-                stats.condition_success_rates[condition_key] - 5, 0
-            )
-        
-        # อัพเดทสถิติที่คำนวณได้
-        stats.update_stats()
-        
-        # บันทึกประวัติ
-        recovery_record = {
-            "recovery_id": recovery_id,
-            "method": method.value,
-            "start_time": recovery_info["start_time"].isoformat(),
-            "end_time": datetime.now().isoformat(),
-            "duration_minutes": recovery_time,
-            "initial_loss": recovery_info["initial_loss"],
-            "final_loss": recovery_info["current_loss"],
-            "recovery_cost": recovery_info["recovery_cost"],
-            "result": final_result.value,
-            "market_condition": market_condition.value,
-            "position_count": len(recovery_info["loss_positions"])
-        }
-        
-        self.recovery_history.append(recovery_record)
-        
-        # จำกัดประวัติ
-        if len(self.recovery_history) > 500:
-            self.recovery_history = self.recovery_history[-500:]
-        
-        # ลบจาก active recoveries
-        del self.active_recoveries[recovery_id]
-        
-        self.logger.info(
-            f"✅ จบ Recovery: {recovery_id} Result: {final_result.value} "
-            f"Time: {recovery_time:.1f}min Recovery: {((abs(recovery_info['initial_loss']) - abs(recovery_info['current_loss'])) / abs(recovery_info['initial_loss']) * 100):.1f}%"
-        )
-    
-    def get_recovery_statistics(self) -> Dict[str, Dict]:
-        """ดึงสถิติ Recovery ทั้งหมด"""
-        
-        stats_summary = {}
-        
-        for method, stats in self.recovery_stats.items():
-            stats_summary[method.value] = {
-                "total_attempts": stats.total_attempts,
-                "success_rate": round(stats.success_rate, 2),
-                "efficiency_score": round(stats.efficiency_score, 3),
-                "avg_recovery_time_minutes": round(stats.avg_recovery_time, 1),
-                "condition_success_rates": stats.condition_success_rates,
-                "urgency_success_rates": stats.urgency_success_rates
+    def get_portfolio_summary(self) -> Dict[str, Any]:
+        """📊 ดึงสรุป Portfolio"""
+        with self.tracker_lock:
+            positions = list(self.positions.values())
+            
+            if not positions:
+                return {
+                    'total_positions': 0,
+                    'total_profit': 0.0,
+                    'total_volume': 0.0,
+                    'profitable_positions': 0,
+                    'losing_positions': 0,
+                    'recovery_positions': 0,
+                    'positions_needing_recovery': 0
+                }
+            
+            return {
+                'total_positions': len(positions),
+                'total_profit': sum(pos.profit for pos in positions),
+                'total_volume': sum(pos.volume for pos in positions),
+                'profitable_positions': len([p for p in positions if p.is_profitable]),
+                'losing_positions': len([p for p in positions if not p.is_profitable]),
+                'recovery_positions': len([p for p in positions if p.is_recovery_position]),
+                'positions_needing_recovery': len([p for p in positions if p.needs_recovery and not p.is_recovery_position]),
+                'avg_profit_per_position': sum(pos.profit for pos in positions) / len(positions),
+                'max_profit_position': max(positions, key=lambda p: p.profit).profit if positions else 0,
+                'max_loss_position': min(positions, key=lambda p: p.profit).profit if positions else 0,
+                'total_pips': sum(pos.pips for pos in positions),
+                'last_update': self.last_update_time.isoformat() if self.last_update_time else None
             }
-        
-        return stats_summary
     
-    def get_active_recoveries(self) -> List[Dict]:
-        """ดึงข้อมูล Recovery ที่กำลังดำเนินการ"""
+    def register_position_callback(self, callback: Callable):
+        """📞 ลงทะเบียน Callback สำหรับ Position Updates"""
+        self.position_callbacks.append(callback)
+    
+    def register_recovery_callback(self, callback: Callable):
+        """📞 ลงทะเบียน Callback สำหรับ Recovery Events"""
+        self.recovery_callbacks.append(callback)
+    
+    def force_update(self):
+        """🔄 บังคับอัพเดทข้อมูล"""
+        self._update_positions_from_mt5()
+        self._detect_position_changes()
+        self._calculate_portfolio_metrics()
         
-        active_list = []
-        
-        for recovery_id, info in self.active_recoveries.items():
-            active_list.append({
-                "recovery_id": recovery_id,
-                "method": info["method"].value,
-                "start_time": info["start_time"].isoformat(),
-                "duration_minutes": (datetime.now() - info["start_time"]).total_seconds() / 60,
-                "initial_loss": info["initial_loss"],
-                "current_loss": info["current_loss"],
-                "recovery_progress": ((abs(info["initial_loss"]) - abs(info["current_loss"])) / abs(info["initial_loss"]) * 100) if info["initial_loss"] != 0 else 0,
-                "status": info["status"].value,
-                "position_count": len(info["loss_positions"])
-            })
-        
-        return active_list
+        self.logger.info("🔄 Force updated position data")
+    
+    def get_tracking_status(self) -> Dict[str, Any]:
+        """📊 ดึงสถานะการติดตาม"""
+        return {
+            'tracking_active': self.tracking_active,
+            'total_positions': len(self.positions),
+            'positions_needing_recovery': self.positions_needing_recovery,
+            'last_update': self.last_update_time.isoformat() if self.last_update_time else None,
+            'total_tracked': self.total_positions_tracked,
+            'update_interval': self.update_interval
+        }
 
-# === HELPER FUNCTIONS ===
 
-def get_recovery_recommendation_for_losses(loss_positions: List[LossPosition]) -> Optional[RecoveryRecommendation]:
-   """ดึงคำแนะนำ Recovery สำหรับ positions ที่ขาดทุน"""
-   selector = get_recovery_selector()
-   return selector.select_recovery_method(loss_positions)
+# === COMPATIBILITY CLASSES (สำหรับไฟล์เดิม) ===
 
-def start_automated_recovery(recovery_id: str, loss_positions: List[LossPosition]) -> bool:
-   """เริ่ม Recovery อัตโนมัติ"""
-   selector = get_recovery_selector()
-   
-   # ขอคำแนะนำ
-   recommendation = selector.select_recovery_method(loss_positions)
-   if not recommendation:
-       return False
-   
-   # เริ่ม Recovery
-   return selector.start_recovery(
-       recovery_id,
-       recommendation.primary_method,
-       loss_positions,
-       recommendation.recommended_parameters
-   )
+class PositionTracker(EnhancedPositionTracker):
+    """Legacy PositionTracker class สำหรับ backward compatibility"""
+    
+    def __init__(self):
+        super().__init__()
+        self.logger.info("📊 Using Legacy PositionTracker interface")
+    
+    def get_positions(self) -> List[PositionData]:
+        """Legacy method name"""
+        return self.get_all_positions()
+    
+    def get_position_count(self) -> int:
+        """Legacy method"""
+        return len(self.positions)
+    
+    def is_tracking(self) -> bool:
+        """Legacy method"""
+        return self.tracking_active
 
-def get_recovery_status_summary() -> Dict:
-   """ดึงสรุปสถานะ Recovery"""
-   selector = get_recovery_selector()
-   
-   active_recoveries = selector.get_active_recoveries()
-   stats = selector.get_recovery_statistics()
-   
-   return {
-       "active_count": len(active_recoveries),
-       "total_initial_loss": sum(r["initial_loss"] for r in active_recoveries),
-       "total_current_loss": sum(r["current_loss"] for r in active_recoveries),
-       "average_progress": statistics.mean([r["recovery_progress"] for r in active_recoveries]) if active_recoveries else 0,
-       "methods_performance": stats
-   }
 
-# === GLOBAL INSTANCE ===
-_global_recovery_selector: Optional[RecoverySelector] = None
+# === SINGLETON PATTERN ===
 
-def get_recovery_selector() -> RecoverySelector:
-   """ดึง Recovery Selector แบบ Singleton"""
-   global _global_recovery_selector
-   if _global_recovery_selector is None:
-       _global_recovery_selector = RecoverySelector()
-   return _global_recovery_selector
+_position_tracker_instance = None
+
+def get_position_tracker() -> EnhancedPositionTracker:
+    """Get Position Tracker Singleton Instance"""
+    global _position_tracker_instance
+    if _position_tracker_instance is None:
+        _position_tracker_instance = EnhancedPositionTracker()
+    return _position_tracker_instance
+
+
+# === COMPATIBILITY ALIASES ===
+# สำหรับ backward compatibility กับไฟล์เดิม
+
+Position = PositionData  # Alias หลักสำหรับ recovery_selector.py และไฟล์อื่นๆ
+
+# Additional aliases
+PositionInfo = PositionData
+TradePosition = PositionData
+
+# Legacy function aliases
+def get_tracker():
+    """Legacy function name"""
+    return get_position_tracker()
+
+def create_position_tracker():
+    """Legacy creation function"""
+    return EnhancedPositionTracker()
+
+
+# === UTILITY FUNCTIONS ===
+
+def get_current_positions() -> List[Dict[str, Any]]:
+    """ดึงรายการ Position ปัจจุบัน"""
+    tracker = get_position_tracker()
+    positions = tracker.get_all_positions()
+    
+    return [pos.to_dict() for pos in positions]
+
+def get_positions_summary() -> Dict[str, Any]:
+    """ดึงสรุป Positions"""
+    tracker = get_position_tracker()
+    return tracker.get_portfolio_summary()
+
+def check_positions_needing_recovery() -> List[str]:
+    """ตรวจสอบ Positions ที่ต้องการ Recovery"""
+    tracker = get_position_tracker()
+    recovery_positions = tracker.get_positions_needing_recovery()
+    return [pos.ticket for pos in recovery_positions]
+
+def start_position_tracking() -> bool:
+    """เริ่มการติดตาม Positions"""
+    tracker = get_position_tracker()
+    return tracker.start_tracking()
+
+def stop_position_tracking():
+    """หยุดการติดตาม Positions"""
+    tracker = get_position_tracker()
+    tracker.stop_tracking()
+
+
+# === EXPORT LIST ===
+__all__ = [
+    'PositionData', 'Position', 'PositionInfo', 'TradePosition',  # Classes
+    'EnhancedPositionTracker', 'PositionTracker',  # Tracker classes
+    'get_position_tracker', 'get_tracker', 'create_position_tracker',  # Factory functions
+    'get_current_positions', 'get_positions_summary', 'check_positions_needing_recovery',  # Utility functions
+    'start_position_tracking', 'stop_position_tracking'  # Control functions
+]
+
+
+# === TESTING FUNCTION ===
+def test_position_tracker():
+    """ทดสอบ Position Tracker"""
+    print("🧪 Testing Enhanced Position Tracker")
+    print("=" * 50)
+    
+    tracker = get_position_tracker()
+    
+    # Test MT5 connection
+    if not ensure_mt5_connection():
+        print("❌ Cannot connect to MT5")
+        return False
+    
+    print("✅ MT5 Connected")
+    
+    # Start tracking
+    if tracker.start_tracking():
+        print("✅ Position tracking started")
+    else:
+        print("❌ Failed to start tracking")
+        return False
+    
+    # Wait and check positions
+    time.sleep(3)
+    
+    positions = tracker.get_all_positions()
+    print(f"📊 Found {len(positions)} positions")
+    
+    for pos in positions:
+        print(f"   {pos.ticket}: {pos.type} {pos.volume} {pos.symbol} | P&L: ${pos.profit:.2f}")
+    
+    # Test summary
+    summary = tracker.get_portfolio_summary()
+    print(f"\n📈 Portfolio Summary:")
+    print(f"   Total Positions: {summary['total_positions']}")
+    print(f"   Total P&L: ${summary['total_profit']:.2f}")
+    print(f"   Positions Needing Recovery: {summary['positions_needing_recovery']}")
+    
+    # Stop tracking
+    tracker.stop_tracking()
+    print("🛑 Position tracking stopped")
+    
+    return True
+
+
+if __name__ == "__main__":
+    test_position_tracker()
