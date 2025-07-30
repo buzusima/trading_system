@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-INTELLIGENT GOLD TRADING SYSTEM - MAIN ENTRY POINT (SIMPLE)
-==========================================================
-จุดเริ่มต้นหลักของระบบเทรดทองอัจฉริยะ - เวอร์ชันเรียบง่าย
+INTELLIGENT GOLD TRADING SYSTEM - MAIN ENTRY POINT (CORRECTED)
+=============================================================
+จุดเริ่มต้นหลักของระบบเทรดทองอัจฉริยะ - เวอร์ชันที่แก้ไข import แล้ว
 เป็นเพียง entry point ที่เรียกใช้ components อื่นๆ เท่านั้น
 """
 
@@ -33,7 +33,7 @@ except ImportError:
     MT5_AVAILABLE = False
     log_status("❌ MetaTrader5 module not available", True)
 
-# ===== SYSTEM IMPORTS =====
+# ===== SYSTEM IMPORTS - แก้ไข CLASS NAMES =====
 components_loaded = {}
 
 # Config
@@ -51,77 +51,89 @@ except ImportError as e:
     components_loaded['trading_params'] = False
     log_status(f"⚠️ Trading params not loaded: {e}")
 
-# Market Intelligence
+# Market Intelligence - แก้ไข CLASS NAME
 try:
-    from market_intelligence.market_analyzer import MarketAnalyzer
+    from market_intelligence.market_analyzer import RealTimeMarketAnalyzer, IntelligentStrategySelector
     components_loaded['market_analyzer'] = True
 except ImportError as e:
     components_loaded['market_analyzer'] = False
     log_status(f"⚠️ Market analyzer not loaded: {e}")
 
-# Recovery System
+# Recovery System - แก้ไข CLASS NAME
 try:
-    from intelligent_recovery.recovery_selector import RecoverySelector
+    from intelligent_recovery.recovery_engine import RealRecoveryEngine
     components_loaded['recovery_selector'] = True
 except ImportError as e:
     components_loaded['recovery_selector'] = False
     log_status(f"⚠️ Recovery selector not loaded: {e}")
 
-# Position Management
+# Position Management - แก้ไข CLASS NAME
 try:
-    from position_management.position_tracker import PositionTracker
+    from position_management.position_tracker import RealPositionTracker
     components_loaded['position_tracker'] = True
 except ImportError as e:
     components_loaded['position_tracker'] = False
     log_status(f"⚠️ Position tracker not loaded: {e}")
 
-# MT5 Integration
+# MT5 Integration - แก้ไข CLASS NAME
 try:
-    from mt5_integration.mt5_connector import MT5Connector
+    from mt5_integration.mt5_connector import RealMT5Connector, auto_connect_mt5
     components_loaded['mt5_connector'] = True
 except ImportError as e:
     components_loaded['mt5_connector'] = False
     log_status(f"⚠️ MT5 connector not loaded: {e}")
 
-# GUI
+# GUI System
 try:
-    from gui_system.components.trading_dashboard import TradingDashboard
+    from gui_system.main_window import TradingDashboard
     components_loaded['gui'] = True
 except ImportError as e:
     components_loaded['gui'] = False
     log_status(f"⚠️ GUI not loaded: {e}")
 
-# ===== SIMPLE SYSTEM STATUS =====
+# ===== SYSTEM STATUS CLASS =====
 class SystemStatus:
+    """แสดงสถานะระบบ"""
+    
     def __init__(self):
-        self.start_time = datetime.now()
-        self.is_running = True
-        self.components = components_loaded
-        
-    def get_uptime(self):
-        return (datetime.now() - self.start_time).total_seconds()
+        self.uptime_start = datetime.now()
     
     def show_status(self):
-        uptime = self.get_uptime()
-        loaded = sum(self.components.values())
-        total = len(self.components)
+        """แสดงสถานะปัจจุบัน"""
+        print("\n" + "="*50)
+        print("📊 SYSTEM STATUS")
+        print("="*50)
         
-        print(f"\n{'='*50}")
-        print(f"🚀 SYSTEM STATUS")
-        print(f"{'='*50}")
-        print(f"⏰ Uptime: {uptime:.1f} seconds")
-        print(f"🧩 Components: {loaded}/{total} loaded")
-        print(f"🔌 MT5: {'Available' if MT5_AVAILABLE else 'Not Available'}")
+        # Uptime
+        uptime = datetime.now() - self.uptime_start
+        print(f"⏱️ Uptime: {uptime}")
         
-        print(f"\n📊 Component Details:")
-        for component, status in self.components.items():
-            status_icon = "✅" if status else "❌"
-            print(f"   {status_icon} {component}")
-        print(f"{'='*50}\n")
+        # Components
+        print(f"🔧 Components: {len(components_loaded)}")
+        loaded_count = sum(1 for loaded in components_loaded.values() if loaded)
+        print(f"✅ Loaded: {loaded_count}/{len(components_loaded)}")
+        
+        # Component details
+        for component, loaded in components_loaded.items():
+            status = "✅" if loaded else "❌"
+            print(f"   {status} {component}")
+        
+        # MT5 Status
+        if MT5_AVAILABLE:
+            print(f"🔌 MT5: Available")
+            if mt5.terminal_info():
+                terminal_info = mt5.terminal_info()
+                print(f"   Connected: {'Yes' if terminal_info.connected else 'No'}")
+            else:
+                print(f"   Connected: No")
+        else:
+            print(f"🔌 MT5: Not Available")
+        
+        print("="*50)
 
-# ===== MAIN FUNCTION =====
+# ===== MAIN FUNCTION - เรียบง่าย =====
 def main():
-    """ฟังก์ชันหลัก - เรียบง่าย"""
+    """Main function - เวอร์ชันเรียบง่าย"""
     
     print("🚀 INTELLIGENT GOLD TRADING SYSTEM")
     print("Simple Entry Point Version")
