@@ -1,0 +1,26 @@
+{
+  "symbol": "XAUUSD",
+  "default_lot_size": 0.01,
+  "max_spread": 5.0,
+  "max_positions": 10,
+  "risk_per_trade": 2.0,
+  "enable_recovery": true,
+  "recovery_multiplier": 2.0,
+  "max_recovery_levels": 5,
+  "recovery_strategy": "Martingale",
+  "signal_frequency": "Normal",
+  "min_signal_strength": 60.0,
+  "enable_news_filter": true,
+  "trading_sessions": [
+    "Asian",
+    "London",
+    "NY"
+  ],
+  "update_interval": 1000,
+  "show_charts": true,
+  "sound_alerts": true,
+  "auto_scroll_logs": true,
+  "max_daily_loss": 500.0,
+  "daily_profit_target": 200.0,
+  "emergency_stop_loss": 1000.0
+}
