@@ -188,7 +188,7 @@ class SmartMartingaleRecovery:
                     if profit < 0:  # เฉพาะ position ขาดทุน
                         recovery_pos = RecoveryPosition(
                             ticket=ticket,
-                            symbol=pos.get('symbol', 'XAUUSD'),
+                            symbol=pos.get('symbol', 'XAUUSD.v'),
                             position_type=pos.get('type', 'BUY'),
                             volume=pos.get('volume', 0.01),
                             open_price=pos.get('price_open', 0.0),
@@ -643,7 +643,7 @@ class SmartMartingaleRecovery:
             # สร้าง order request
             order_request = {
                 'action': 'TRADE_ACTION_DEAL',
-                'symbol': 'XAUUSD',
+                'symbol': 'XAUUSD.v',
                 'volume': decision.recovery_volume,
                 'type': 'ORDER_TYPE_BUY' if decision.recovery_type == 'BUY' else 'ORDER_TYPE_SELL',
                 'price': decision.recovery_price,
@@ -936,7 +936,7 @@ def main():
     sample_positions = [
         {
             'ticket': 12345,
-            'symbol': 'XAUUSD',
+            'symbol': 'XAUUSD.v',
             'type': 'BUY',
             'volume': 0.01,
             'price_open': 2000.0,
@@ -946,7 +946,7 @@ def main():
         },
         {
             'ticket': 12346,
-            'symbol': 'XAUUSD',
+            'symbol': 'XAUUSD.v',
             'type': 'SELL',
             'volume': 0.01,
             'price_open': 1990.0,

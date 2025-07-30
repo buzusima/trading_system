@@ -26,7 +26,7 @@ try:
 except ImportError:
     GOLD_DETECTOR_AVAILABLE = False
     def auto_detect_gold_symbol():
-        return "XAUUSD"  # Fallback
+        return "XAUUSD.v"  # Fallback
 
 # ===== ENUMS - Trading Logic Definitions =====
 
@@ -393,7 +393,7 @@ class TradingParameters:
         except Exception as e:
             print(f"❌ ข้อผิดพลาดในการหา Gold Symbol: {e}")
             # ใช้ default
-            self.symbol_settings.primary_symbol = "XAUUSD"
+            self.symbol_settings.primary_symbol = "XAUUSD.v"
             self.symbol_settings.symbol_verified = False
             self.symbol_settings.detection_notes = f"Error occurred, using default: {e}"
             return False
@@ -405,7 +405,7 @@ class TradingParameters:
         else:
             # Auto-detect ถ้ายังไม่มี
             self.auto_detect_gold_symbol()
-            return self.symbol_settings.primary_symbol or "XAUUSD"
+            return self.symbol_settings.primary_symbol or "XAUUSD.v"
     
     def set_symbol(self, symbol: str, verify: bool = True) -> bool:
         """กำหนด Symbol ด้วยตนเอง"""

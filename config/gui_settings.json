@@ -1,5 +1,5 @@
 {
-  "symbol": "XAUUSD",
+  "symbol": "XAUUSD.v",
   "default_lot_size": 0.01,
   "max_spread": 5.0,
   "max_positions": 10,

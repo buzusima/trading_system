@@ -754,7 +754,7 @@ def auto_connect_mt5(symbols_to_verify: List[str] = None) -> RealMT5Connector:
     config = MT5Config(
         auto_detect=True,
         verify_trade_allowed=True,
-        verify_symbols=symbols_to_verify or ["XAUUSD.v"],
+        verify_symbols=symbols_to_verify or ["XAUUSD"],
         cache_symbols=True,
         enable_logging=True
     )

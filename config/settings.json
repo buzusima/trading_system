@@ -1,6 +1,6 @@
 {
   "trading_mode": "LIVE",
-  "symbol": "XAUUSD",
+  "symbol": "XAUUSD.v",
   "environment": "production",
   "daily_volume_target_min": 50.0,
   "daily_volume_target_max": 100.0,

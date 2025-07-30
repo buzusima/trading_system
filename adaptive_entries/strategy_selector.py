@@ -1,569 +1,604 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-INTELLIGENT STRATEGY SELECTION - ระบบเลือกกลยุทธ์อัจฉริยะ
+STRATEGY SELECTOR - ระบบเลือกกลยุทธ์การเทรดอัจฉริยะ
 =================================================
-เลือกกลยุทธ์การเข้าออร์เดอร์แบบอัตโนมัติตามสภาพตลาด
-รองรับการปรับตัวและเรียนรู้จากประสิทธิภาพ
+ระบบเลือกกลยุทธ์การเทรดแบบอัตโนมัติตามสภาวะตลาด
+รองรับการปรับเปลี่ยนกลยุทธ์แบบเรียลไทม์
 
-เชื่อมต่อไปยัง:
-- market_intelligence/market_analyzer.py (การวิเคราะห์ตลาด)
-- adaptive_entries/entry_engines/* (กลยุทธ์ต่างๆ)
-- config/trading_params.py (พารามิเตอร์กลยุทธ์)
-- config/session_config.py (การตั้งค่า session)
+🎯 ฟีเจอร์หลัก:
+- เลือกกลยุทธ์ตามสภาวะตลาด
+- ปรับพารามิเตอร์แบบอัตโนมัติ
+- รองรับหลายกลยุทธ์พร้อมกัน
+- ประเมินประสิทธิภาพแบบเรียลไทม์
 """
 
-import threading
-import time
-from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from enum import Enum
-import statistics
+from datetime import datetime
+import random
 
+# Import market analyzer
 try:
-    from market_intelligence.market_analyzer import (
-        MarketAnalyzer, MarketCondition, TrendDirection, MarketAnalysis
-    )
-    from config.trading_params import get_trading_parameters, EntryStrategy, RecoveryMethod
-    from config.session_config import get_session_manager, SessionType
-    from utilities.professional_logger import setup_trading_logger
-    from utilities.error_handler import handle_trading_errors, ErrorCategory, ErrorSeverity
-except ImportError as e:
-    print(f"Import Error in strategy_selector.py: {e}")
+    from market_intelligence.market_analyzer import MarketAnalyzer
 
-class StrategyPerformance(Enum):
-    """ระดับประสิทธิภาพของกลยุทธ์"""
-    EXCELLENT = "EXCELLENT"     # >90%
-    GOOD = "GOOD"              # 70-90%
-    AVERAGE = "AVERAGE"        # 50-70%
-    POOR = "POOR"              # 30-50%
-    VERY_POOR = "VERY_POOR"    # <30%
+except ImportError:
+    # Fallback definitions if import fails
+    class TrendDirection(Enum):
+        STRONG_UPTREND = "เทรนด์ขึ้นแรง"
+        UPTREND = "เทรนด์ขึ้น"
+        SIDEWAYS = "เทรนด์ข้าง"
+        DOWNTREND = "เทรนด์ลง"
+        STRONG_DOWNTREND = "เทรนด์ลงแรง"
+        UNCERTAIN = "ไม่แน่นอน"
+    
+    class MarketCondition(Enum):
+        TRENDING = "Trending"
+        RANGING = "Ranging"
+        VOLATILE = "Volatile"
+        QUIET = "Quiet"
+        NEWS_IMPACT = "News Impact"
+        BREAKOUT = "Breakout"
+    
+    class TradingSession(Enum):
+        ASIAN = "Asian"
+        LONDON = "London"
+        NEW_YORK = "New York"
+        OVERLAP = "Overlap"
+        CLOSED = "Market Closed"
+    
+    class VolatilityLevel(Enum):
+        VERY_LOW = "ต่ำมาก"
+        LOW = "ต่ำ"
+        NORMAL = "ปกติ"
+        HIGH = "สูง"
+        VERY_HIGH = "สูงมาก"
+
+class EntryStrategy(Enum):
+    """กลยุทธ์การเข้าเทรด"""
+    TREND_FOLLOWING = "Trend Following"
+    MEAN_REVERSION = "Mean Reversion"
+    BREAKOUT = "Breakout"
+    SCALPING = "Scalping"
+    NEWS_TRADING = "News Trading"
+    GRID_TRADING = "Grid Trading"
+    HEDGING = "Hedging"
+
+class EntrySignal(Enum):
+    """สัญญาณการเข้าเทรด"""
+    STRONG_BUY = "BUY แรง"
+    BUY = "BUY"
+    WEAK_BUY = "BUY อ่อน"
+    NEUTRAL = "เป็นกลาง"
+    WEAK_SELL = "SELL อ่อน"
+    SELL = "SELL"
+    STRONG_SELL = "SELL แรง"
+    NO_SIGNAL = "ไม่มีสัญญาณ"
+
+class OrderType(Enum):
+    """ประเภทคำสั่งซื้อขาย"""
+    MARKET = "Market"
+    LIMIT = "Limit"
+    STOP = "Stop"
+    STOP_LIMIT = "Stop Limit"
 
 @dataclass
-class StrategyStats:
-    """สถิติประสิทธิภาพของกลยุทธ์"""
+class StrategyParameters:
+    """พารามิเตอร์กลยุทธ์"""
     strategy: EntryStrategy
-    total_trades: int = 0
-    winning_trades: int = 0
-    losing_trades: int = 0
-    total_profit: float = 0.0
-    total_loss: float = 0.0
-    avg_profit_per_trade: float = 0.0
-    win_rate: float = 0.0
-    profit_factor: float = 0.0
-    max_drawdown: float = 0.0
-    avg_holding_time_minutes: float = 0.0
-    performance_rating: StrategyPerformance = StrategyPerformance.AVERAGE
     
-    # เงื่อนไขตลาดที่เหมาะสม
-    best_market_conditions: List[MarketCondition] = field(default_factory=list)
-    best_sessions: List[SessionType] = field(default_factory=list)
+    # การตั้งค่าทั่วไป
+    lot_size: float = 0.1
+    max_spread: float = 1.0
+    min_volatility: float = 0.5
+    max_volatility: float = 3.0
     
-    # ประสิทธิภาพในแต่ละเงื่อนไข
-    condition_performance: Dict[str, float] = field(default_factory=dict)
-    session_performance: Dict[str, float] = field(default_factory=dict)
+    # การตั้งค่าเวลา
+    min_trade_interval: int = 60  # วินาที
+    max_trades_per_hour: int = 10
+    preferred_sessions: List[TradingSession] = field(default_factory=list)
     
-    def update_stats(self):
-        """อัพเดทสถิติที่คำนวณได้"""
-        if self.total_trades > 0:
-            self.win_rate = (self.winning_trades / self.total_trades) * 100
-            self.avg_profit_per_trade = (self.total_profit + self.total_loss) / self.total_trades
-            
-            if abs(self.total_loss) > 0:
-                self.profit_factor = self.total_profit / abs(self.total_loss)
-            
-            # กำหนด performance rating
-            if self.win_rate >= 90:
-                self.performance_rating = StrategyPerformance.EXCELLENT
-            elif self.win_rate >= 70:
-                self.performance_rating = StrategyPerformance.GOOD
-            elif self.win_rate >= 50:
-                self.performance_rating = StrategyPerformance.AVERAGE
-            elif self.win_rate >= 30:
-                self.performance_rating = StrategyPerformance.POOR
-            else:
-                self.performance_rating = StrategyPerformance.VERY_POOR
+    # การตั้งค่าเทคนิค
+    rsi_oversold: float = 30
+    rsi_overbought: float = 70
+    adx_threshold: float = 25
+    atr_multiplier: float = 2.0
+    
+    # การจัดการความเสี่ยง
+    max_drawdown: float = 5.0
+    profit_target: float = 2.0
+    risk_reward_ratio: float = 1.5
 
-@dataclass
-class StrategyRecommendation:
-    """คำแนะนำกลยุทธ์"""
-    primary_strategy: EntryStrategy
-    alternative_strategies: List[EntryStrategy]
-    confidence_score: float  # 0.0-1.0
-    reasoning: List[str]
-    market_condition: MarketCondition
-    expected_win_rate: float
-    recommended_lot_size: float
-    risk_level: str  # LOW, MEDIUM, HIGH
-    timing_score: float  # 0.0-1.0 (1.0 = perfect timing)
+@dataclass 
+class EntrySignalData:
+    """ข้อมูลสัญญาณเข้าเทรด"""
+    signal: EntrySignal = EntrySignal.NO_SIGNAL
+    strategy: EntryStrategy = EntryStrategy.TREND_FOLLOWING
+    confidence: float = 0.0
+    entry_price: float = 0.0
+    suggested_lot: float = 0.1
+    order_type: OrderType = OrderType.MARKET
+    
+    # เหตุผลการตัดสินใจ
+    reasoning: str = ""
+    technical_score: float = 0.0
+    market_score: float = 0.0
+    
+    # การจัดการความเสี่ยง
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    risk_reward: float = 0.0
+    
+    # เวลา
+    timestamp: datetime = field(default_factory=datetime.now)
+    valid_until: datetime = field(default_factory=datetime.now)
 
 class StrategySelector:
-    """
-    ตัวเลือกกลยุทธ์อัจฉริยะ
-    เลือกกลยุทธ์ที่เหมาะสมที่สุดตามสภาพตลาดและประสิทธิภาพในอดีต
-    """
+    """ระบบเลือกกลยุทธ์หลัก"""
     
-    def __init__(self):
-        self.logger = setup_trading_logger()
-        self.market_analyzer = MarketAnalyzer("XAUUSD.v")()
-        self.session_manager = get_session_manager()
-        self.trading_params = get_trading_parameters()
+    def __init__(self, symbol: str = "XAUUSD.v"):
+        self.symbol = symbol
+        self.current_strategy: Optional[EntryStrategy] = None
+        self.strategy_params: Dict[EntryStrategy, StrategyParameters] = {}
+        self.performance_history: Dict[EntryStrategy, List[float]] = {}
         
-        # สถิติประสิทธิภาพ
-        self.strategy_stats: Dict[EntryStrategy, StrategyStats] = {}
-        self.selection_history: List[Tuple[datetime, EntryStrategy, MarketCondition]] = []
+        # สถิติ
+        self.total_signals = 0
+        self.successful_signals = 0
+        self.last_signal_time: Optional[datetime] = None
         
-        # การตั้งค่า
-        self.min_trades_for_stats = 10  # จำนวนเทรดขั้นต่ำก่อนใช้สถิติ
-        self.stats_window_days = 30     # หน้าต่างเวลาสำหรับสถิติ
+        # เริ่มต้นกลยุทธ์
+        self._initialize_strategies()
         
-        # Threading
-        self.selector_lock = threading.Lock()
-        
-        # เริ่มต้นสถิติ
-        self._initialize_strategy_stats()
-        
-        self.logger.info("🎯 เริ่มต้น Strategy Selector")
+        print(f"🎯 เริ่มต้น Strategy Selector สำหรับ {symbol}")
     
-    def _initialize_strategy_stats(self):
-        """เริ่มต้นสถิติสำหรับกลยุทธ์ทั้งหมด"""
-        for strategy in EntryStrategy:
-            self.strategy_stats[strategy] = StrategyStats(strategy=strategy)
-    
-    @handle_trading_errors(ErrorCategory.SYSTEM, ErrorSeverity.MEDIUM)
-    def select_best_strategy(self, force_analysis: bool = False) -> Optional[StrategyRecommendation]:
-        """
-        เลือกกลยุทธ์ที่ดีที่สุดสำหรับสภาพตลาดปัจจุบัน
-        """
-        with self.selector_lock:
-            try:
-                # วิเคราะห์ตลาดปัจจุบัน
-                market_analysis = self.market_analyzer.get_current_analysis(force_update=force_analysis)
-                if not market_analysis:
-                    self.logger.warning("⚠️ ไม่สามารถดึงข้อมูลการวิเคราะห์ตลาดได้")
-                    return None
-                
-                # ดึงกลยุทธ์ที่แนะนำจากการวิเคราะห์ตลาด
-                recommended_strategies = market_analysis.recommended_entry_strategies
-                
-                if not recommended_strategies:
-                    recommended_strategies = [EntryStrategy.MEAN_REVERSION]  # default
-                
-                # คำนวณคะแนนสำหรับแต่ละกลยุทธ์
-                strategy_scores = self._calculate_strategy_scores(
-                    recommended_strategies, 
-                    market_analysis
-                )
-                
-                # เลือกกลยุทธ์ที่ดีที่สุด
-                best_strategy = max(strategy_scores.keys(), key=lambda s: strategy_scores[s])
-                
-                # เรียงกลยุทธ์ทางเลือกตามคะแนน
-                alternative_strategies = sorted(
-                    [s for s in strategy_scores.keys() if s != best_strategy],
-                    key=lambda s: strategy_scores[s],
-                    reverse=True
-                )[:2]  # เอา 2 อันดับถัดไป
-                
-                # สร้างคำแนะนำ
-                recommendation = self._create_recommendation(
-                    best_strategy,
-                    alternative_strategies,
-                    strategy_scores[best_strategy],
-                    market_analysis
-                )
-                
-                # บันทึกประวัติการเลือก
-                self.selection_history.append((
-                    datetime.now(),
-                    best_strategy,
-                    market_analysis.primary_condition
-                ))
-                
-                # จำกัดประวัติ
-                if len(self.selection_history) > 1000:
-                    self.selection_history = self.selection_history[-1000:]
-                
-                self.logger.info(
-                    f"🎯 เลือกกลยุทธ์: {best_strategy.value} "
-                    f"(Confidence: {recommendation.confidence_score:.2f}) "
-                    f"Market: {market_analysis.primary_condition.value}"
-                )
-                
-                return recommendation
-                
-            except Exception as e:
-                self.logger.error(f"❌ ข้อผิดพลาดในการเลือกกลยุทธ์: {e}")
-                return None
-    
-    def _calculate_strategy_scores(self, strategies: List[EntryStrategy], 
-                                 market_analysis: MarketAnalysis) -> Dict[EntryStrategy, float]:
-        """คำนวณคะแนนสำหรับแต่ละกลยุทธ์"""
-        scores = {}
+    def _initialize_strategies(self):
+        """เริ่มต้นกลยุทธ์ทั้งหมด"""
         
-        for strategy in strategies:
-            score = 0.0
-            
-            # คะแนนพื้นฐานจากการแนะนำของตลาด (40%)
-            base_score = 0.4
-            
-            # คะแนนจากประสิทธิภาพในอดีต (30%)
-            performance_score = self._get_performance_score(strategy, market_analysis)
-            
-            # คะแนนจากความเหมาะสมกับ session (20%)
-            session_score = self._get_session_compatibility_score(strategy, market_analysis)
-            
-            # คะแนนจากความเหมาะสมกับสภาพตลาดเฉพาะ (10%)
-            condition_score = self._get_condition_compatibility_score(strategy, market_analysis)
-            
-            # รวมคะแนน
-            total_score = (base_score + 
-                          performance_score * 0.3 + 
-                          session_score * 0.2 + 
-                          condition_score * 0.1)
-            
-            scores[strategy] = min(max(total_score, 0.0), 1.0)  # จำกัดระหว่าง 0-1
-        
-        return scores
-    
-    def _get_performance_score(self, strategy: EntryStrategy, 
-                             market_analysis: MarketAnalysis) -> float:
-        """คำนวณคะแนนจากประสิทธิภาพในอดีต"""
-        stats = self.strategy_stats.get(strategy)
-        if not stats or stats.total_trades < self.min_trades_for_stats:
-            return 0.5  # คะแนนกลางถ้าไม่มีข้อมูลเพียงพอ
-        
-        # คะแนนจาก win rate
-        win_rate_score = stats.win_rate / 100
-        
-        # คะแนนจาก profit factor
-        profit_factor_score = min(stats.profit_factor / 2.0, 1.0) if stats.profit_factor > 0 else 0.0
-        
-        # คะแนนจากสภาพตลาดที่เหมาะสม
-        condition_match_score = 0.0
-        if market_analysis.primary_condition.value in stats.condition_performance:
-            condition_match_score = stats.condition_performance[market_analysis.primary_condition.value] / 100
-        
-        # รวมคะแนน
-        performance_score = (win_rate_score * 0.4 + 
-                           profit_factor_score * 0.3 + 
-                           condition_match_score * 0.3)
-        
-        return performance_score
-    
-    def _get_session_compatibility_score(self, strategy: EntryStrategy, 
-                                       market_analysis: MarketAnalysis) -> float:
-        """คำนวณคะแนนความเหมาะสมกับ session"""
-        if not market_analysis.current_session:
-            return 0.5
-        
-        # ดึงการตั้งค่า session
-        session_profile = self.session_manager.get_session_profile(market_analysis.current_session)
-        if not session_profile:
-            return 0.5
-        
-        # ตรวจสอบว่ากลยุทธ์อยู่ในรายการที่แนะนำหรือไม่
-        if strategy.value in session_profile.preferred_strategies:
-            return 1.0
-        elif strategy.value in session_profile.avoid_strategies:
-            return 0.1
-        else:
-            return 0.5
-    
-    def _get_condition_compatibility_score(self, strategy: EntryStrategy, 
-                                         market_analysis: MarketAnalysis) -> float:
-        """คำนวณคะแนนความเหมาะสมกับสภาพตลาด"""
-        
-        # กำหนดความเหมาะสมระหว่างกลยุทธ์และสภาพตลาด
-        compatibility_matrix = {
-            EntryStrategy.TREND_FOLLOWING: {
-                MarketCondition.TRENDING_STRONG: 1.0,
-                MarketCondition.TRENDING_WEAK: 0.8,
-                MarketCondition.RANGING_TIGHT: 0.2,
-                MarketCondition.RANGING_WIDE: 0.3,
-                MarketCondition.VOLATILE_HIGH: 0.6,
-                MarketCondition.NEWS_IMPACT: 0.7
-            },
-            EntryStrategy.MEAN_REVERSION: {
-                MarketCondition.TRENDING_STRONG: 0.2,
-                MarketCondition.TRENDING_WEAK: 0.4,
-                MarketCondition.RANGING_TIGHT: 1.0,
-                MarketCondition.RANGING_WIDE: 0.9,
-                MarketCondition.VOLATILE_HIGH: 0.5,
-                MarketCondition.NEWS_IMPACT: 0.3
-            },
-            EntryStrategy.BREAKOUT_FALSE: {
-                MarketCondition.TRENDING_STRONG: 0.7,
-                MarketCondition.TRENDING_WEAK: 0.5,
-                MarketCondition.RANGING_TIGHT: 0.6,
-                MarketCondition.RANGING_WIDE: 0.8,
-                MarketCondition.VOLATILE_HIGH: 1.0,
-                MarketCondition.NEWS_IMPACT: 0.9
-            },
-            EntryStrategy.NEWS_REACTION: {
-                MarketCondition.TRENDING_STRONG: 0.6,
-                MarketCondition.TRENDING_WEAK: 0.4,
-                MarketCondition.RANGING_TIGHT: 0.3,
-                MarketCondition.RANGING_WIDE: 0.5,
-                MarketCondition.VOLATILE_HIGH: 0.8,
-                MarketCondition.NEWS_IMPACT: 1.0
-            },
-            EntryStrategy.SCALPING_ENGINE: {
-                MarketCondition.TRENDING_STRONG: 0.4,
-                MarketCondition.TRENDING_WEAK: 0.6,
-                MarketCondition.RANGING_TIGHT: 0.9,
-                MarketCondition.RANGING_WIDE: 0.7,
-                MarketCondition.VOLATILE_HIGH: 0.3,
-                MarketCondition.NEWS_IMPACT: 0.2
-            }
-        }
-        
-        strategy_compatibility = compatibility_matrix.get(strategy, {})
-        return strategy_compatibility.get(market_analysis.primary_condition, 0.5)
-    
-    def _create_recommendation(self, primary_strategy: EntryStrategy,
-                             alternative_strategies: List[EntryStrategy],
-                             confidence_score: float,
-                             market_analysis: MarketAnalysis) -> StrategyRecommendation:
-        """สร้างคำแนะนำกลยุทธ์"""
-        
-        # สร้างเหตุผล
-        reasoning = []
-        reasoning.append(f"สภาพตลาด: {market_analysis.primary_condition.value}")
-        reasoning.append(f"ทิศทาง Trend: {market_analysis.trend_direction.value}")
-        reasoning.append(f"ความแรง ADX: {market_analysis.adx_value:.1f}")
-        
-        if market_analysis.current_session:
-            reasoning.append(f"Session: {market_analysis.current_session.value}")
-        
-        # ประมาณ win rate
-        strategy_stats = self.strategy_stats.get(primary_strategy)
-        expected_win_rate = strategy_stats.win_rate if strategy_stats and strategy_stats.total_trades >= self.min_trades_for_stats else 65.0
-        
-        # แนะนำขนาด lot
-        recommended_lot_size = self._calculate_recommended_lot_size(market_analysis, confidence_score)
-        
-        # ประเมินความเสี่ยง
-        risk_level = self._assess_risk_level(market_analysis, confidence_score)
-        
-        # คะแนน timing
-        timing_score = self._calculate_timing_score(market_analysis)
-        
-        return StrategyRecommendation(
-            primary_strategy=primary_strategy,
-            alternative_strategies=alternative_strategies,
-            confidence_score=confidence_score,
-            reasoning=reasoning,
-            market_condition=market_analysis.primary_condition,
-            expected_win_rate=expected_win_rate,
-            recommended_lot_size=recommended_lot_size,
-            risk_level=risk_level,
-            timing_score=timing_score
+        # Trend Following Strategy
+        self.strategy_params[EntryStrategy.TREND_FOLLOWING] = StrategyParameters(
+            strategy=EntryStrategy.TREND_FOLLOWING,
+            lot_size=0.1,
+            adx_threshold=25,
+            preferred_sessions=[TradingSession.LONDON, TradingSession.NEW_YORK],
+            max_trades_per_hour=5
         )
+        
+        # Mean Reversion Strategy
+        self.strategy_params[EntryStrategy.MEAN_REVERSION] = StrategyParameters(
+            strategy=EntryStrategy.MEAN_REVERSION,
+            lot_size=0.05,
+            rsi_oversold=25,
+            rsi_overbought=75,
+            preferred_sessions=[TradingSession.ASIAN],
+            max_trades_per_hour=8
+        )
+        
+        # Breakout Strategy
+        self.strategy_params[EntryStrategy.BREAKOUT] = StrategyParameters(
+            strategy=EntryStrategy.BREAKOUT,
+            lot_size=0.15,
+            min_volatility=1.0,
+            preferred_sessions=[TradingSession.LONDON, TradingSession.OVERLAP],
+            max_trades_per_hour=3
+        )
+        
+        # Scalping Strategy
+        self.strategy_params[EntryStrategy.SCALPING] = StrategyParameters(
+            strategy=EntryStrategy.SCALPING,
+            lot_size=0.2,
+            max_spread=0.5,
+            min_trade_interval=30,
+            max_trades_per_hour=20,
+            preferred_sessions=[TradingSession.OVERLAP]
+        )
+        
+        # Grid Trading Strategy
+        self.strategy_params[EntryStrategy.GRID_TRADING] = StrategyParameters(
+            strategy=EntryStrategy.GRID_TRADING,
+            lot_size=0.05,
+            min_volatility=0.3,
+            max_volatility=2.0,
+            max_trades_per_hour=15
+        )
+        
+        # เริ่มต้น performance history
+        for strategy in EntryStrategy:
+            self.performance_history[strategy] = []
     
-    def _calculate_recommended_lot_size(self, market_analysis: MarketAnalysis, 
-                                      confidence_score: float) -> float:
-        """คำนวณขนาด lot ที่แนะนำ"""
-        base_lot = 0.01
+    def select_optimal_strategy(self, market_analysis: Any) -> EntryStrategy:
+        """เลือกกลยุทธ์ที่เหมาะสมที่สุด"""
+        try:
+            strategy_scores = {}
+            
+            # คำนวณคะแนนสำหรับแต่ละกลยุทธ์
+            for strategy in EntryStrategy:
+                strategy_scores[strategy] = self._calculate_strategy_score(strategy, market_analysis)
+            
+            # เลือกกลยุทธ์ที่มีคะแนนสูงสุด
+            best_strategy = max(strategy_scores, key=strategy_scores.get)
+            best_score = strategy_scores[best_strategy]
+            
+            # ตรวจสอบว่าคะแนนดีพอหรือไม่
+            if best_score > 60:
+                self.current_strategy = best_strategy
+                print(f"🎯 เลือกกลยุทธ์: {best_strategy.value} (คะแนน: {best_score:.1f})")
+                return best_strategy
+            else:
+                print(f"⚠️ ไม่มีกลยุทธ์ที่เหมาะสม (คะแนนสูงสุด: {best_score:.1f})")
+                return EntryStrategy.TREND_FOLLOWING  # default
+                
+        except Exception as e:
+            print(f"❌ ข้อผิดพลาดในการเลือกกลยุทธ์: {e}")
+            return EntryStrategy.TREND_FOLLOWING
+    
+    def _calculate_strategy_score(self, strategy: EntryStrategy, market_analysis: Any) -> float:
+        """คำนวณคะแนนความเหมาะสมของกลยุทธ์"""
+        score = 50.0  # คะแนนพื้นฐาน
         
-        # ปรับตาม confidence
-        confidence_multiplier = 0.5 + (confidence_score * 0.5)  # 0.5-1.0
+        try:
+            # ได้คะแนนจาก Market Condition
+            if hasattr(market_analysis, 'market_condition'):
+                condition = market_analysis.market_condition
+                
+                if strategy == EntryStrategy.TREND_FOLLOWING:
+                    if condition == MarketCondition.TRENDING:
+                        score += 30
+                    elif condition == MarketCondition.BREAKOUT:
+                        score += 20
+                    elif condition == MarketCondition.RANGING:
+                        score -= 20
+                
+                elif strategy == EntryStrategy.MEAN_REVERSION:
+                    if condition == MarketCondition.RANGING:
+                        score += 30
+                    elif condition == MarketCondition.QUIET:
+                        score += 20
+                    elif condition == MarketCondition.TRENDING:
+                        score -= 20
+                
+                elif strategy == EntryStrategy.BREAKOUT:
+                    if condition == MarketCondition.BREAKOUT:
+                        score += 35
+                    elif condition == MarketCondition.VOLATILE:
+                        score += 25
+                    elif condition == MarketCondition.QUIET:
+                        score -= 25
+                
+                elif strategy == EntryStrategy.SCALPING:
+                    if condition == MarketCondition.VOLATILE:
+                        score += 25
+                    elif condition == MarketCondition.RANGING:
+                        score += 15
+                    elif condition == MarketCondition.QUIET:
+                        score -= 30
+            
+            # ได้คะแนนจาก Trading Session
+            if hasattr(market_analysis, 'trading_session'):
+                session = market_analysis.trading_session
+                params = self.strategy_params.get(strategy)
+                
+                if params and session in params.preferred_sessions:
+                    score += 15
+                elif session == TradingSession.CLOSED:
+                    score -= 40
+            
+            # ได้คะแนนจาก Volatility
+            if hasattr(market_analysis, 'volatility_level'):
+                volatility = market_analysis.volatility_level
+                
+                if strategy == EntryStrategy.SCALPING:
+                    if volatility in [VolatilityLevel.HIGH, VolatilityLevel.VERY_HIGH]:
+                        score += 20
+                    elif volatility == VolatilityLevel.VERY_LOW:
+                        score -= 25
+                
+                elif strategy == EntryStrategy.GRID_TRADING:
+                    if volatility in [VolatilityLevel.LOW, VolatilityLevel.NORMAL]:
+                        score += 20
+                    elif volatility == VolatilityLevel.VERY_HIGH:
+                        score -= 20
+            
+            # ได้คะแนนจาก Trend Strength
+            if hasattr(market_analysis, 'trend_strength'):
+                trend_strength = market_analysis.trend_strength
+                
+                if strategy == EntryStrategy.TREND_FOLLOWING:
+                    if trend_strength > 70:
+                        score += 25
+                    elif trend_strength < 30:
+                        score -= 20
+                
+                elif strategy == EntryStrategy.MEAN_REVERSION:
+                    if trend_strength < 30:
+                        score += 20
+                    elif trend_strength > 70:
+                        score -= 25
+            
+            # ได้คะแนนจาก Performance History
+            if strategy in self.performance_history:
+                recent_performance = self.performance_history[strategy][-10:]  # 10 ครั้งล่าสุด
+                if recent_performance:
+                    avg_performance = sum(recent_performance) / len(recent_performance)
+                    score += (avg_performance - 50) * 0.3  # ปรับคะแนนตาม performance
+            
+            return max(0, min(100, score))  # จำกัดคะแนนระหว่าง 0-100
+            
+        except Exception as e:
+            print(f"⚠️ ข้อผิดพลาดในการคำนวณคะแนน {strategy}: {e}")
+            return 50.0
+    
+    def generate_entry_signal(self, market_analysis: Any) -> EntrySignalData:
+        """สร้างสัญญาณเข้าเทรด"""
+        signal_data = EntrySignalData()
         
-        # ปรับตาม volatility
-        volatility_multipliers = {
-            'LOW': 1.2,
-            'NORMAL': 1.0,
-            'HIGH': 0.8,
-            'EXTREME': 0.6
+        try:
+            # เลือกกลยุทธ์ที่เหมาะสม
+            strategy = self.select_optimal_strategy(market_analysis)
+            signal_data.strategy = strategy
+            
+            # สร้างสัญญาณตามกลยุทธ์
+            if strategy == EntryStrategy.TREND_FOLLOWING:
+                signal_data = self._generate_trend_following_signal(market_analysis, signal_data)
+            elif strategy == EntryStrategy.MEAN_REVERSION:
+                signal_data = self._generate_mean_reversion_signal(market_analysis, signal_data)
+            elif strategy == EntryStrategy.BREAKOUT:
+                signal_data = self._generate_breakout_signal(market_analysis, signal_data)
+            elif strategy == EntryStrategy.SCALPING:
+                signal_data = self._generate_scalping_signal(market_analysis, signal_data)
+            elif strategy == EntryStrategy.GRID_TRADING:
+                signal_data = self._generate_grid_signal(market_analysis, signal_data)
+            
+            # บันทึกสถิติ
+            self.total_signals += 1
+            self.last_signal_time = datetime.now()
+            
+            # แสดงผล
+            if signal_data.signal != EntrySignal.NO_SIGNAL:
+                print(f"📡 สัญญาณ: {signal_data.signal.value} | "
+                        f"กลยุทธ์: {signal_data.strategy.value} | "
+                        f"ความมั่นใจ: {signal_data.confidence:.1f}%")
+                print(f"💡 เหตุผล: {signal_data.reasoning}")
+            
+            return signal_data
+            
+        except Exception as e:
+            print(f"❌ ข้อผิดพลาดในการสร้างสัญญาณ: {e}")
+            signal_data.signal = EntrySignal.NO_SIGNAL
+            return signal_data
+    
+    def _generate_trend_following_signal(self, market_analysis: Any, signal_data: EntrySignalData) -> EntrySignalData:
+        """สร้างสัญญาณ Trend Following"""
+        try:
+            if not hasattr(market_analysis, 'trend_direction'):
+                return signal_data
+            
+            trend = market_analysis.trend_direction
+            strength = getattr(market_analysis, 'trend_strength', 0)
+            
+            if trend == TrendDirection.STRONG_UPTREND and strength > 70:
+                signal_data.signal = EntrySignal.STRONG_BUY
+                signal_data.confidence = strength
+                signal_data.reasoning = f"เทรนด์ขึ้นแรง ความแข็งแกร่ง {strength:.1f}%"
+            elif trend == TrendDirection.UPTREND and strength > 50:
+                signal_data.signal = EntrySignal.BUY
+                signal_data.confidence = strength * 0.8
+                signal_data.reasoning = f"เทรนด์ขึ้น ความแข็งแกร่ง {strength:.1f}%"
+            elif trend == TrendDirection.STRONG_DOWNTREND and strength > 70:
+                signal_data.signal = EntrySignal.STRONG_SELL
+                signal_data.confidence = strength
+                signal_data.reasoning = f"เทรนด์ลงแรง ความแข็งแกร่ง {strength:.1f}%"
+            elif trend == TrendDirection.DOWNTREND and strength > 50:
+                signal_data.signal = EntrySignal.SELL
+                signal_data.confidence = strength * 0.8
+                signal_data.reasoning = f"เทรนด์ลง ความแข็งแกร่ง {strength:.1f}%"
+            else:
+                signal_data.signal = EntrySignal.NO_SIGNAL
+                signal_data.reasoning = "เทรนด์ไม่ชัดเจน"
+            
+            return signal_data
+            
+        except Exception as e:
+            print(f"⚠️ ข้อผิดพลาดใน trend following signal: {e}")
+            return signal_data
+    
+    def _generate_mean_reversion_signal(self, market_analysis: Any, signal_data: EntrySignalData) -> EntrySignalData:
+        """สร้างสัญญาณ Mean Reversion"""
+        try:
+            # ใช้ข้อมูล momentum เป็นตัวแทน RSI
+            momentum = getattr(market_analysis, 'momentum_score', 50)
+            
+            if momentum < 20:  # Oversold
+                signal_data.signal = EntrySignal.BUY
+                signal_data.confidence = (20 - momentum) * 4  # แปลงเป็น 0-80
+                signal_data.reasoning = f"ตลาดขายเกิน Momentum: {momentum:.1f}"
+            elif momentum > 80:  # Overbought
+                signal_data.signal = EntrySignal.SELL
+                signal_data.confidence = (momentum - 80) * 4
+                signal_data.reasoning = f"ตลาดซื้อเกิน Momentum: {momentum:.1f}"
+            else:
+                signal_data.signal = EntrySignal.NO_SIGNAL
+                signal_data.reasoning = "ตลาดในช่วงปกติ"
+            
+            return signal_data
+            
+        except Exception as e:
+            print(f"⚠️ ข้อผิดพลาดใน mean reversion signal: {e}")
+            return signal_data
+    
+    def _generate_breakout_signal(self, market_analysis: Any, signal_data: EntrySignalData) -> EntrySignalData:
+        """สร้างสัญญาณ Breakout"""
+        try:
+            volatility = getattr(market_analysis, 'volatility_score', 50)
+            current_price = getattr(market_analysis, 'current_price', 0)
+            resistance = getattr(market_analysis, 'resistance_level', 0)
+            support = getattr(market_analysis, 'support_level', 0)
+            
+            if volatility > 70 and current_price > 0:
+                if resistance > 0 and current_price > resistance * 1.001:  # Breakout above resistance
+                    signal_data.signal = EntrySignal.BUY
+                    signal_data.confidence = volatility
+                    signal_data.reasoning = f"Breakout เหนือ Resistance {resistance:.2f}"
+                elif support > 0 and current_price < support * 0.999:  # Breakdown below support
+                    signal_data.signal = EntrySignal.SELL
+                    signal_data.confidence = volatility
+                    signal_data.reasoning = f"Breakdown ต่ำกว่า Support {support:.2f}"
+                else:
+                    signal_data.signal = EntrySignal.NO_SIGNAL
+                    signal_data.reasoning = "รอ Breakout ที่ชัดเจน"
+            else:
+                signal_data.signal = EntrySignal.NO_SIGNAL
+                signal_data.reasoning = "ความผันผวนต่ำเกินไป"
+            
+            return signal_data
+            
+        except Exception as e:
+            print(f"⚠️ ข้อผิดพลาดใน breakout signal: {e}")
+            return signal_data
+    
+    def _generate_scalping_signal(self, market_analysis: Any, signal_data: EntrySignalData) -> EntrySignalData:
+        """สร้างสัญญาณ Scalping"""
+        try:
+            # Scalping ต้องการสัญญาณเร็วและถี่
+            trend = getattr(market_analysis, 'trend_direction', TrendDirection.SIDEWAYS)
+            volatility = getattr(market_analysis, 'volatility_score', 50)
+            
+            if volatility > 40:  # ต้องมีความผันผวนพอ
+                # สุ่มสัญญาณเพื่อจำลอง high-frequency trading
+                random_signal = random.choice([EntrySignal.BUY, EntrySignal.SELL, EntrySignal.NO_SIGNAL])
+                
+                if random_signal != EntrySignal.NO_SIGNAL:
+                    signal_data.signal = random_signal
+                    signal_data.confidence = volatility * 0.8
+                    signal_data.reasoning = f"Scalping โอกาส ความผันผวน: {volatility:.1f}"
+                else:
+                    signal_data.signal = EntrySignal.NO_SIGNAL
+                    signal_data.reasoning = "รอโอกาส Scalping"
+            else:
+                signal_data.signal = EntrySignal.NO_SIGNAL
+                signal_data.reasoning = "ความผันผวนต่ำเกินไปสำหรับ Scalping"
+            
+            return signal_data
+            
+        except Exception as e:
+            print(f"⚠️ ข้อผิดพลาดใน scalping signal: {e}")
+            return signal_data
+    
+    def _generate_grid_signal(self, market_analysis: Any, signal_data: EntrySignalData) -> EntrySignalData:
+        """สร้างสัญญาณ Grid Trading"""
+        try:
+            # Grid Trading เหมาะกับตลาดที่ไม่มีเทรนด์ชัด
+            trend_strength = getattr(market_analysis, 'trend_strength', 50)
+            
+            if trend_strength < 40:  # เทรนด์อ่อน เหมาะกับ Grid
+                # สลับ BUY/SELL สำหรับ Grid
+                signal_choice = random.choice([EntrySignal.BUY, EntrySignal.SELL])
+                signal_data.signal = signal_choice
+                signal_data.confidence = 60
+                signal_data.reasoning = f"Grid Trading - เทรนด์อ่อน {trend_strength:.1f}%"
+            else:
+                signal_data.signal = EntrySignal.NO_SIGNAL
+                signal_data.reasoning = "เทรนด์แรงเกินไปสำหรับ Grid"
+            
+            return signal_data
+            
+        except Exception as e:
+            print(f"⚠️ ข้อผิดพลาดใน grid signal: {e}")
+            return signal_data
+    
+    def update_strategy_performance(self, strategy: EntryStrategy, performance_score: float):
+        """อัพเดทประสิทธิภาพกลยุทธ์"""
+        try:
+            if strategy not in self.performance_history:
+                self.performance_history[strategy] = []
+            
+            self.performance_history[strategy].append(performance_score)
+            
+            # เก็บข้อมูลแค่ 50 ครั้งล่าสุด
+            if len(self.performance_history[strategy]) > 50:
+                self.performance_history[strategy].pop(0)
+            
+            print(f"📊 อัพเดทประสิทธิภาพ {strategy.value}: {performance_score:.1f}")
+            
+        except Exception as e:
+            print(f"⚠️ ข้อผิดพลาดในการอัพเดทประสิทธิภาพ: {e}")
+    
+    def get_strategy_statistics(self) -> Dict[str, Any]:
+        """ดึงสถิติกลยุทธ์"""
+        stats = {
+            'current_strategy': self.current_strategy.value if self.current_strategy else "ไม่มี",
+            'total_signals': self.total_signals,
+            'success_rate': (self.successful_signals / max(self.total_signals, 1)) * 100,
+            'last_signal_time': self.last_signal_time.isoformat() if self.last_signal_time else None,
+            'strategy_performance': {}
         }
-        volatility_multiplier = volatility_multipliers.get(market_analysis.volatility_level, 1.0)
         
-        # ปรับตาม session
-        session_multiplier = 1.0
-        if market_analysis.current_session:
-            session_profile = self.session_manager.get_session_profile(market_analysis.current_session)
-            if session_profile:
-                session_multiplier = session_profile.base_lot_multiplier
+        # สถิติแต่ละกลยุทธ์
+        for strategy, performance_list in self.performance_history.items():
+            if performance_list:
+                stats['strategy_performance'][strategy.value] = {
+                    'average_score': sum(performance_list) / len(performance_list),
+                    'total_uses': len(performance_list),
+                    'recent_score': performance_list[-1] if performance_list else 0
+                }
         
-        # คำนวณขนาดสุดท้าย
-        recommended_lot = base_lot * confidence_multiplier * volatility_multiplier * session_multiplier
-        
-        return max(0.01, min(recommended_lot, 0.5))  # จำกัดระหว่าง 0.01-0.5
-    
-    def _assess_risk_level(self, market_analysis: MarketAnalysis, confidence_score: float) -> str:
-        """ประเมินระดับความเสี่ยง"""
-        risk_factors = 0
-        
-        # ความเสี่ยงจาก volatility
-        if market_analysis.volatility_level in ['HIGH', 'EXTREME']:
-            risk_factors += 2
-        elif market_analysis.volatility_level == 'LOW':
-            risk_factors += 1
-        
-        # ความเสี่ยงจาก confidence
-        if confidence_score < 0.3:
-            risk_factors += 2
-        elif confidence_score < 0.6:
-            risk_factors += 1
-        
-        # ความเสี่ยงจาก trend uncertainty
-        if market_analysis.trend_direction == TrendDirection.UNCERTAIN:
-            risk_factors += 1
-        
-        # ความเสี่ยงจาก session
-        if market_analysis.current_session == SessionType.QUIET_HOURS:
-            risk_factors += 1
-        
-        # ประเมินระดับ
-        if risk_factors >= 4:
-            return "HIGH"
-        elif risk_factors >= 2:
-            return "MEDIUM"
-        else:
-            return "LOW"
-    
-    def _calculate_timing_score(self, market_analysis: MarketAnalysis) -> float:
-        """คำนวณคะแนน timing"""
-        timing_factors = []
-        
-        # RSI timing
-        if 30 <= market_analysis.rsi_value <= 70:
-            rsi_score = 1.0 - (abs(market_analysis.rsi_value - 50) / 20)
-            timing_factors.append(rsi_score)
-        else:
-            timing_factors.append(0.3)  # Extreme RSI = bad timing
-        
-        # MACD timing
-        if market_analysis.macd_value != 0 and market_analysis.macd_signal != 0:
-            macd_momentum = abs(market_analysis.macd_value - market_analysis.macd_signal)
-            macd_score = min(macd_momentum * 10, 1.0)  # Normalize
-            timing_factors.append(macd_score)
-        
-        # ADX timing
-        if market_analysis.adx_value > 0:
-            if 20 <= market_analysis.adx_value <= 40:
-                adx_score = 1.0
-            elif market_analysis.adx_value < 20:
-                adx_score = market_analysis.adx_value / 20
-            else:
-                adx_score = max(0.5, 1.0 - ((market_analysis.adx_value - 40) / 40))
-            timing_factors.append(adx_score)
-        
-        return statistics.mean(timing_factors) if timing_factors else 0.5
-    
-    def record_strategy_result(self, strategy: EntryStrategy, profit: float, 
-                             holding_time_minutes: float, market_condition: MarketCondition):
-        """บันทึกผลลัพธ์ของกลยุทธ์"""
-        with self.selector_lock:
-            stats = self.strategy_stats.get(strategy)
-            if not stats:
-                return
-            
-            # อัพเดทสถิติพื้นฐาน
-            stats.total_trades += 1
-            
-            if profit > 0:
-                stats.winning_trades += 1
-                stats.total_profit += profit
-            else:
-                stats.losing_trades += 1
-                stats.total_loss += profit  # profit เป็นลบแล้ว
-            
-            # อัพเดทเวลาถือ position
-            if stats.total_trades == 1:
-                stats.avg_holding_time_minutes = holding_time_minutes
-            else:
-                stats.avg_holding_time_minutes = (
-                    (stats.avg_holding_time_minutes * (stats.total_trades - 1) + holding_time_minutes) 
-                    / stats.total_trades
-                )
-            
-            # อัพเดทประสิทธิภาพตามสภาพตลาด
-            condition_key = market_condition.value
-            if condition_key not in stats.condition_performance:
-                stats.condition_performance[condition_key] = 0.0
-            
-            # คำนวณ win rate ใหม่สำหรับสภาพตลาดนี้
-            # (ตัวอย่างง่ายๆ - ควรมีการเก็บข้อมูลแยกตามสภาพตลาด)
-            current_rate = stats.condition_performance[condition_key]
-            if profit > 0:
-                new_rate = min(current_rate + 5, 100)  # เพิ่ม 5% เมื่อชนะ
-            else:
-                new_rate = max(current_rate - 3, 0)    # ลด 3% เมื่อแพ้
-            stats.condition_performance[condition_key] = new_rate
-            
-            # อัพเดทสถิติที่คำนวณได้
-            stats.update_stats()
-            
-            self.logger.debug(
-                f"📊 บันทึกผล {strategy.value}: "
-                f"Profit: {profit:.2f} Win Rate: {stats.win_rate:.1f}% "
-                f"Total Trades: {stats.total_trades}"
-            )
-    
-    def get_strategy_statistics(self) -> Dict[str, Dict]:
-        """ดึงสถิติกลยุทธ์ทั้งหมด"""
-        stats_summary = {}
-        
-        for strategy, stats in self.strategy_stats.items():
-            stats_summary[strategy.value] = {
-                "total_trades": stats.total_trades,
-                "win_rate": round(stats.win_rate, 2),
-                "profit_factor": round(stats.profit_factor, 2),
-                "avg_profit_per_trade": round(stats.avg_profit_per_trade, 2),
-                "performance_rating": stats.performance_rating.value,
-                "avg_holding_time_minutes": round(stats.avg_holding_time_minutes, 1),
-                "best_conditions": list(stats.best_market_conditions),
-                "condition_performance": stats.condition_performance
-            }
-        
-        return stats_summary
-    
-    def get_selection_history(self, hours: int = 24) -> List[Dict]:
-        """ดึงประวัติการเลือกกลยุทธ์"""
-        cutoff_time = datetime.now() - timedelta(hours=hours)
-        
-        recent_selections = [
-            selection for selection in self.selection_history 
-            if selection[0] > cutoff_time
-        ]
-        
-        return [
-            {
-                "timestamp": selection[0].isoformat(),
-                "strategy": selection[1].value,
-                "market_condition": selection[2].value
-            }
-            for selection in recent_selections
-        ]
+        return stats
 
-# === HELPER FUNCTIONS ===
-
-def get_current_strategy_recommendation() -> Optional[StrategyRecommendation]:
-    """ดึงคำแนะนำกลยุทธ์ปัจจุบัน"""
-    selector = get_strategy_selector()
-    return selector.select_best_strategy()
-
-def record_trade_result(strategy_name: str, profit: float, 
-                       holding_time_minutes: float, market_condition_name: str):
-    """บันทึกผลการเทรด"""
+def test_strategy_selector():
+    """ทดสอบ Strategy Selector"""
+    print("🧪 ทดสอบ Strategy Selector...")
+    
     try:
-        strategy = EntryStrategy(strategy_name)
-        condition = MarketCondition(market_condition_name)
+        # สร้าง selector
+        selector = StrategySelector("XAUUSD")
         
-        selector = get_strategy_selector()
-        selector.record_strategy_result(strategy, profit, holding_time_minutes, condition)
+        # จำลองข้อมูล market analysis
+        class MockMarketAnalysis:
+            def __init__(self):
+                self.trend_direction = TrendDirection.UPTREND
+                self.market_condition = MarketCondition.TRENDING
+                self.trading_session = TradingSession.LONDON
+                self.volatility_level = VolatilityLevel.NORMAL
+                self.trend_strength = 65
+                self.volatility_score = 55
+                self.momentum_score = 30
+                self.current_price = 2000.0
+                self.resistance_level = 2010.0
+                self.support_level = 1990.0
         
-    except ValueError as e:
-        print(f"Invalid strategy or condition name: {e}")
+        mock_analysis = MockMarketAnalysis()
+        
+        # ทดสอบการเลือกกลยุทธ์
+        print("📊 ทดสอบการเลือกกลยุทธ์...")
+        strategy = selector.select_optimal_strategy(mock_analysis)
+        print(f"✅ กลยุทธ์ที่เลือก: {strategy.value}")
+        
+        # ทดสอบการสร้างสัญญาณ
+        print("\n📡 ทดสอบการสร้างสัญญาณ...")
+        signal = selector.generate_entry_signal(mock_analysis)
+        
+        print(f"🎯 ผลลัพธ์:")
+        print(f"   สัญญาณ: {signal.signal.value}")
+        print(f"   กลยุทธ์: {signal.strategy.value}")
+        print(f"   ความมั่นใจ: {signal.confidence:.1f}%")
+        print(f"   เหตุผล: {signal.reasoning}")
+        
+        # ทดสอบการอัพเดทประสิทธิภาพ
+        print("\n📈 ทดสอบการอัพเดทประสิทธิภาพ...")
+        selector.update_strategy_performance(strategy, 75.0)
+        
+        # แสดงสถิติ
+        print("\n📊 สถิติกลยุทธ์:")
+        stats = selector.get_strategy_statistics()
+        print(f"   กลยุทธ์ปัจจุบัน: {stats['current_strategy']}")
+        print(f"   สัญญาณทั้งหมด: {stats['total_signals']}")
+        print(f"   อัตราสำเร็จ: {stats['success_rate']:.1f}%")
+        
+        print("✅ ทดสอบ Strategy Selector เสร็จสิ้น")
+        
+    except Exception as e:
+        print(f"❌ ข้อผิดพลาดในการทดสอบ: {e}")
 
-# === GLOBAL INSTANCE ===
-_global_strategy_selector: Optional[StrategySelector] = None
-
-def get_strategy_selector() -> StrategySelector:
-    """ดึง Strategy Selector แบบ Singleton"""
-    global _global_strategy_selector
-    if _global_strategy_selector is None:
-        _global_strategy_selector = StrategySelector()
-    return _global_strategy_selector
+if __name__ == "__main__":
+   test_strategy_selector()

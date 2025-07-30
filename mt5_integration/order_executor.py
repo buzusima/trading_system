@@ -129,7 +129,7 @@ class RealOrderExecutor:
         }
         
         # Symbol verification
-        self.symbol = "XAUUSD"
+        self.symbol = "XAUUSD.v"
         symbol_info = mt5.symbol_info(self.symbol)
         if not symbol_info:
             raise RuntimeError(f"❌ ไม่พบ Symbol {self.symbol}")

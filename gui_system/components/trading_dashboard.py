@@ -469,7 +469,7 @@ class PositionsPanel:
             # เพิ่มข้อมูลใหม่
             for position in positions:
                 position_id = position.get('position_id', 'N/A')
-                symbol = position.get('symbol', 'XAUUSD')
+                symbol = position.get('symbol', 'XAUUSD.v')
                 direction = position.get('direction', 'BUY')
                 volume = f"{position.get('volume', 0):.2f}"
                 entry_price = f"{position.get('entry_price', 0):.2f}"
