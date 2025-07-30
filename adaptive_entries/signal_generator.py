@@ -437,8 +437,8 @@ class IntelligentSignalGenerator:
     def _init_market_analyzer_safe(self):
         """เริ่มต้น Market Analyzer แบบปลอดภัย"""
         try:
-            from market_intelligence.market_analyzer import get_market_analyzer
-            self.market_analyzer = get_market_analyzer()
+            from market_intelligence.market_analyzer import MarketAnalyzer
+            self.market_analyzer = MarketAnalyzer("XAUUSD.v")()
             self.logger.info("✅ เชื่อมต่อ Market Analyzer สำเร็จ")
         except ImportError as e:
             self.logger.warning(f"⚠️ ไม่สามารถเชื่อมต่อ Market Analyzer: {e}")

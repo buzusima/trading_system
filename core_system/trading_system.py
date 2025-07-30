@@ -36,7 +36,7 @@ from utilities.professional_logger import setup_component_logger
 from utilities.error_handler import handle_trading_errors, ErrorCategory, ErrorSeverity
 
 # Real Components - No Mock Allowed
-from market_intelligence.market_analyzer import get_market_analyzer
+from market_intelligence.market_analyzer import MarketAnalyzer
 from adaptive_entries.signal_generator import get_intelligent_signal_generator
 from mt5_integration.order_executor import get_smart_order_executor
 from position_management.position_tracker import get_enhanced_position_tracker
@@ -161,7 +161,7 @@ class RealTradingSystem:
             # 1. Market Analyzer
             self.logger.info("📊 โหลด Market Analyzer...")
             self.components['market_analyzer'].status = ComponentStatus.LOADING
-            self.market_analyzer = get_market_analyzer()
+            self.market_analyzer = MarketAnalyzer("XAUUSD.v")()
             if not self.market_analyzer:
                 raise RuntimeError("ไม่สามารถโหลด Market Analyzer ได้")
             self.components['market_analyzer'].instance = self.market_analyzer

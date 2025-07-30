@@ -23,7 +23,7 @@ import statistics
 
 try:
     from market_intelligence.market_analyzer import (
-        get_market_analyzer, MarketCondition, TrendDirection, MarketAnalysis
+        MarketAnalyzer, MarketCondition, TrendDirection, MarketAnalysis
     )
     from config.trading_params import get_trading_parameters, EntryStrategy, RecoveryMethod
     from config.session_config import get_session_manager, SessionType
@@ -106,7 +106,7 @@ class StrategySelector:
     
     def __init__(self):
         self.logger = setup_trading_logger()
-        self.market_analyzer = get_market_analyzer()
+        self.market_analyzer = MarketAnalyzer("XAUUSD.v")()
         self.session_manager = get_session_manager()
         self.trading_params = get_trading_parameters()
         
