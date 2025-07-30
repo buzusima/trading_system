@@ -410,12 +410,12 @@ class IntelligentSignalGenerator:
             from config.trading_params import get_trading_parameters
             params = get_trading_parameters()
             return {
-                'min_lot_size': params.min_volume,
-                'max_lot_size': params.max_volume,
-                'max_spread': params.max_spread,
-                'signal_cooldown': params.signal_cooldown,
-                'strategy_weights': params.strategy_weights,
-                'session_parameters': params.session_parameters
+                'min_lot_size': getattr(params, "min_volume", getattr(params.volume_settings, "base_lot_size", 0.01)),
+                'max_lot_size': getattr(params, "max_volume", getattr(params.volume_settings, "max_lot_size", 1.0)),
+                'max_spread': getattr(params, "max_spread", 3.0),
+                'signal_cooldown': getattr(params, "signal_cooldown", 15),
+                'strategy_weights': getattr(params, "strategy_weights", {}),
+                'session_parameters': getattr(params, "session_parameters", {})
             }
         except ImportError:
             self.logger.warning("⚠️ ไม่สามารถโหลด trading parameters - ใช้ค่าเริ่มต้น")
@@ -437,8 +437,8 @@ class IntelligentSignalGenerator:
     def _init_market_analyzer_safe(self):
         """เริ่มต้น Market Analyzer แบบปลอดภัย"""
         try:
-            from market_intelligence.market_analyzer import MarketAnalyzer
-            self.market_analyzer = MarketAnalyzer("XAUUSD.v")()
+            from market_intelligence.market_analyzer import RealTimeMarketAnalyzer
+            self.market_analyzer = RealTimeMarketAnalyzer("XAUUSD")
             self.logger.info("✅ เชื่อมต่อ Market Analyzer สำเร็จ")
         except ImportError as e:
             self.logger.warning(f"⚠️ ไม่สามารถเชื่อมต่อ Market Analyzer: {e}")
@@ -471,7 +471,7 @@ class IntelligentSignalGenerator:
             
             # เริ่มต้น Market Analyzer ถ้ามี
             if self.market_analyzer and hasattr(self.market_analyzer, 'start_analysis'):
-                if not self.market_analyzer.analysis_active:
+                if not self.market_analyzer.is_analyzing:
                     self.market_analyzer.start_analysis()
             
             self.generation_active = True
